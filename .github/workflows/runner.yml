@@ -1,0 +1,27 @@
+name: ASAP-Rank runner
+on:
+  repository_dispatch: { types: [asap-work] }    # the app starts it the moment you press Inspect or Import
+  schedule: [ { cron: "17 */3 * * *" } ]          # safety net, also keeps Supabase awake
+  workflow_dispatch: {}
+permissions: { contents: write }
+concurrency: { group: asap-runner, cancel-in-progress: false }
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - id: go
+        run: node run.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PSI_API_KEY: ${{ secrets.PSI_API_KEY }}
+          APP_URL: ${{ secrets.APP_URL }}
+          RUN_MINUTES: "30"
+      - name: Carry on if work is left
+        if: steps.go.outputs.again == 'yes'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh api repos/${{ github.repository }}/dispatches -f event_type=asap-work
