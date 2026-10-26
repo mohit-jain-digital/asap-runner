@@ -18,6 +18,9 @@ export function supabaseStore(url, key) {
     claimAi: async n => (await call('rpc/claim_ai', { method: 'POST', body: JSON.stringify({ n }) })) || [],
     saveAi: (row, patch) => call('urls?uid=eq.' + encodeURIComponent(row.uid) + '&url=eq.' + encodeURIComponent(row.url), { method: 'PATCH', headers: { prefer: 'return=minimal' }, body: JSON.stringify(patch) }),
     claimUrls: async n => (await call('rpc/claim_urls', { method: 'POST', body: JSON.stringify({ n }) })) || [],
+    kbPages: async (uid, n) => (await call('urls?select=url&uid=eq.' + encodeURIComponent(uid) + '&status=neq.error&order=priority.desc,added.asc&limit=' + n)) || [],
+    kbSave: async (uid, url, title, chunks) => { await call('kb?uid=eq.' + encodeURIComponent(uid) + '&url=eq.' + encodeURIComponent(url), { method: 'DELETE', headers: { prefer: 'return=minimal' } }); if (chunks.length) await call('kb', { method: 'POST', headers: { prefer: 'return=minimal' }, body: JSON.stringify(chunks.map(c => ({ uid, url, title, chunk: c }))) }) },
+    kbCount: async uid => { const r = await fetch(base + 'kb?select=id&uid=eq.' + encodeURIComponent(uid), { headers: { ...H, prefer: 'count=exact', range: '0-0' } }); const m = /\/(\d+)$/.exec(r.headers.get('content-range') || ''); return m ? +m[1] : 0 },
     insertUrls: rows => call('urls?on_conflict=uid,url', { method: 'POST', headers: { prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(rows) }),
     saveUrls: rows => call('urls?on_conflict=uid,url', { method: 'POST', headers: { prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(rows) }),
     updateJob: (id, patch) => call('jobs?id=eq.' + id, { method: 'PATCH', headers: { prefer: 'return=minimal' }, body: JSON.stringify({ ...patch, updated: new Date().toISOString() }) }),
@@ -64,6 +67,40 @@ export async function runImport(store, job, { budgetMs = 600000, cap = 60000, gc
   if (!any && !queue.length) return store.updateJob(job.id, { status: 'error', err: 'No sitemap found. Check the address, or paste your page addresses instead.', progress: { found: 0 } });
   const fin = !queue.length || capped;
   return store.updateJob(job.id, { status: fin ? 'done' : 'queued', progress: { queue: fin ? [] : queue, visited: [...visited].slice(-300), found, capped, any, done: fin }, err: capped ? (gFull ? 'Shared storage is full, so no more pages can be added right now. Please contact the owner.' : 'Stopped at the limit of ' + cap + ' pages for your plan.') : null, lease_until: null });
+}
+
+// ---- Knowledge base for the chatbot: read the customer's own pages and keep short text chunks (no AI, no Cloudflare load) ----
+export function pageText(html) {
+  const title = ((/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html) || [])[1] || '').replace(/\s+/g, ' ').replace(/&amp;/g, '&').trim().slice(0, 160);
+  let t = String(html).replace(/<(script|style|noscript|svg|nav|header|footer|aside|form|template|iframe)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ');
+  t = t.replace(/<\/(p|div|li|h[1-6]|tr|section|article|br)>|<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'");
+  const lines = t.split(/\n/).map(x => x.replace(/\s+/g, ' ').trim()).filter(x => x.length > 25), out = []; let cur = '';
+  for (const p of lines) { if ((cur + '\n' + p).length > 700 && cur) { out.push(cur); cur = '' } if (p.length > 700) { for (let i = 0; i < p.length; i += 700) out.push(p.slice(i, i + 700)); continue } cur += (cur ? '\n' : '') + p }
+  if (cur) out.push(cur);
+  return { title, chunks: [...new Set(out)].filter(x => x.length >= 40).slice(0, 25) };
+}
+export async function runKb(store, job, { budgetMs = 600000, conc = 4, delayMs = 300, perUser = 4000 } = {}) {
+  const t0 = Date.now(), max = Math.max(20, Math.min(1000, +(job.payload || {}).max || 300)), pr = job.progress || {};
+  const pages = (await store.kbPages(job.uid, max)).map(r => r.url); let i = pr.i || 0, saved = pr.saved || 0, skipped = pr.skipped || 0, have = await store.kbCount(job.uid), full = false;
+  const one = async url => {
+    try {
+      const u = safeUrl(url); if (!u) { skipped++; return }
+      const r = await fetch(u, { headers: { 'user-agent': UA, accept: 'text/html' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+      if (!r.ok || !/html/i.test(r.headers.get('content-type') || '')) { skipped++; return }
+      const b = Buffer.from(await r.arrayBuffer()); if (b.length > 2e6) { skipped++; return }
+      const { title, chunks } = pageText(b.toString('utf8')); if (!chunks.length) { skipped++; return }
+      if (have + chunks.length > perUser) { full = true; return }
+      have += chunks.length;
+      try { await store.kbSave(job.uid, url, title || url, chunks); saved++ } catch (e) { have -= chunks.length; throw e }
+    } catch (e) { skipped++ }
+  };
+  while (i < pages.length && Date.now() - t0 < budgetMs && !full) {
+    const batch = pages.slice(i, i + conc); await Promise.all(batch.map(one)); i += batch.length;
+    if (i % 20 < conc) await store.updateJob(job.id, { progress: { i, saved, skipped, total: pages.length } });
+    await sleep(delayMs);
+  }
+  const fin = i >= pages.length || full;
+  return store.updateJob(job.id, { status: fin ? 'done' : 'queued', progress: { i, saved, skipped, total: pages.length, chunks: have, done: fin }, err: full ? 'The knowledge base limit was reached. Remove pages or ask the owner to raise it.' : (fin && !saved ? 'No readable pages were found. Run an import and an inspection first, so the pages list is not empty.' : null) });
 }
 
 // ---- 3. AI suggestions: for each queued page, ask the app (your Cloudflare Worker) to write suggestions with the customer's own AI key.
@@ -122,7 +159,7 @@ export async function main() {
   const store = supabaseStore(SUPABASE_URL, SUPABASE_SERVICE_KEY), T0 = Date.now(), total = (+process.env.RUN_MINUTES || 30) * 6e4; let imported = 0, inspected = 0;
   for (let k = 0; k < 20 && Date.now() - T0 < total * 0.4; k++) {
     const job = await store.claimJob(); if (!job) break;
-    try { await runImport(store, job, { budgetMs: Math.max(60000, total * 0.4 - (Date.now() - T0)), cap: +process.env.Q_CAP || 60000, gcap: +process.env.G_CAP || 120000 }); imported++ } catch (e) { await store.updateJob(job.id, { status: 'error', err: String(e.message || e).slice(0, 300) }) }
+    try { if (job.kind == 'kb') await runKb(store, job, { budgetMs: Math.max(60000, total * 0.4 - (Date.now() - T0)) }); else await runImport(store, job, { budgetMs: Math.max(60000, total * 0.4 - (Date.now() - T0)), cap: +process.env.Q_CAP || 60000, gcap: +process.env.G_CAP || 120000 }); imported++ } catch (e) { await store.updateJob(job.id, { status: 'error', err: String(e.message || e).slice(0, 300) }) }
   }
   inspected = await runInspect(store, { budgetMs: (total - (Date.now() - T0)) * 0.6, psiKey: process.env.PSI_API_KEY || '', psiMax: +process.env.PSI_MAX || 200 });
   const suggested = await runSuggest(store, { budgetMs: total - (Date.now() - T0), appUrl: process.env.APP_URL || '', key: SUPABASE_SERVICE_KEY, delayMs: +process.env.AI_DELAY_MS || 4000 }); inspected += suggested;

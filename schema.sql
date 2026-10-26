@@ -143,3 +143,25 @@ create or replace function trend(p_uid text) returns json language sql stable as
   select coalesce(json_agg(t order by day), '[]'::json)
   from (select day,pages,checked,avg_score,avg_perf,fail,warn from snap where uid=p_uid and day >= current_date - 400) t
 $$;
+
+
+-- Chatbot knowledge base (filled by the background runner, read by the Worker)
+create table if not exists kb(
+  id bigserial primary key, uid text not null, url text not null, title text, chunk text not null, t timestamptz not null default now());
+create index if not exists kb_uid_url on kb(uid,url);
+create index if not exists kb_fts on kb using gin (to_tsvector('simple', chunk));
+alter table kb enable row level security;
+create or replace function kb_search(p_uid text, p_q text, p_n int default 40) returns table(url text, title text, chunk text) language sql stable as $$
+  select k.url, k.title, k.chunk from kb k where k.uid=p_uid and to_tsvector('simple', k.chunk) @@ websearch_to_tsquery('simple', p_q)
+  order by ts_rank(to_tsvector('simple', k.chunk), websearch_to_tsquery('simple', p_q)) desc limit least(greatest(p_n,1),80) $$;
+create or replace function kb_pages(p_uid text) returns table(url text, title text, n bigint, t timestamptz) language sql stable as $$
+  select k.url, max(k.title), count(*), max(k.t) from kb k where k.uid=p_uid group by k.url order by k.url limit 500 $$;
+create or replace function kb_wipe(p_uid text) returns int language plpgsql as $$ declare n int; begin delete from kb where uid=p_uid; get diagnostics n = row_count; return n; end $$;
+
+
+-- Prices: the Worker saves the owner's prices here as well as in D1. The sales page and sign-up page can read this one row
+-- straight from Supabase with the public (anon) key, so a price change shows at once and costs the Worker nothing.
+create table if not exists site_cfg(k text primary key, v jsonb not null, t bigint);
+alter table site_cfg enable row level security;
+drop policy if exists "public can read prices" on site_cfg;
+create policy "public can read prices" on site_cfg for select to anon using (k = 'prices');
