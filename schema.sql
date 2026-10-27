@@ -165,3 +165,12 @@ create table if not exists site_cfg(k text primary key, v jsonb not null, t bigi
 alter table site_cfg enable row level security;
 drop policy if exists "public can read prices" on site_cfg;
 create policy "public can read prices" on site_cfg for select to anon using (k = 'prices');
+
+
+-- Free-tier meter: the app reads the size of this database to show how full the free 500 MB is.
+create or replace function usage_stats() returns jsonb language sql stable as $$
+  select jsonb_build_object('db_bytes', pg_database_size(current_database()), 'urls', (select count(*) from urls), 'kb', (select count(*) from kb)) $$;
+
+-- Hardening: only your Cloudflare app and your GitHub runner (service key) may call these functions.
+-- The public (anon) key can still read the price row above and nothing else.
+revoke execute on all functions in schema public from public, anon, authenticated;

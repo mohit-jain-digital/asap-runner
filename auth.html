@@ -1,0 +1,166 @@
+<!doctype html><html lang="en"><head><script src="config.js"></script><script>/* ASAP-Rank page shim. Same file runs on the Worker and on a static host.
+   - ASAP_API (from config.js) = Worker address when this page is served from GitHub Pages or your own server.
+   - Login token is kept in localStorage and sent as a Bearer header (cookies do not cross websites).
+   - If the Worker is down or over its free daily limit, the last good data is shown and saving is paused. */
+(function () {
+  var A = String(window.ASAP_API || '').replace(/\/+$/, ''), O = A || location.origin, W = window, F = W.fetch.bind(W);
+  W.ASAP_O = O;
+  var ls = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v) } catch (e) {} return null };
+  var stale = false, CACHE = /^\/api\/(me|state)(\?|$)/;
+  function bar(m) {
+    var d = document.getElementById('rp-off');
+    if (!m) { if (d) d.remove(); return }
+    if (!d) { d = document.createElement('div'); d.id = 'rp-off'; d.setAttribute('role', 'status'); d.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;padding:10px 16px;background:#b45309;color:#fff;font:14px system-ui,sans-serif;text-align:center'; (document.body || document.documentElement).appendChild(d) }
+    d.textContent = m;
+  }
+  function failed(r) { return !r || r.status == 429 || r.status >= 500 }
+  W.fetch = function (u, o) {
+    if (typeof u != 'string' || !(u.indexOf('/api/') == 0 || u.indexOf('/__rp/') == 0)) return F(u, o);
+    var path = u, method = String((o && o.method) || 'GET').toUpperCase(), isApi = u.indexOf('/api/') == 0;
+    if (stale && method == 'PUT' && path.indexOf('/api/state') == 0) return Promise.resolve(new Response(JSON.stringify({ error: 'The service is busy, so saved data is shown. Nothing was saved. Reload in a few minutes.' }), { status: 503, headers: { 'content-type': 'application/json' } }));
+    var opt = Object.assign({}, o || {}); opt.headers = Object.assign({}, opt.headers || {});
+    if (A) { opt.headers['x-rp-remote'] = '1'; var t = ls('rp_tok'); if (t && isApi) opt.headers.authorization = 'Bearer ' + t; u = A + u }
+    var cacheable = isApi && method == 'GET' && CACHE.test(path), key = 'rp_c_' + path.split('?')[0];
+    return F(u, opt).then(function (r) {
+      var tk = r.headers.get('x-rp-token'); if (tk !== null) ls('rp_tok', tk == '-' ? null : tk);
+      if (cacheable && r.ok) { stale = false; bar(''); r.clone().text().then(function (x) { if (x.length < 3e6) ls(key, x) }).catch(function () {}) }
+      if (cacheable && failed(r)) { var c = ls(key); if (c) { stale = true; bar('The service is busy or offline. Showing your last saved data. Saving is paused.'); return new Response(c, { status: 200, headers: { 'content-type': 'application/json', 'x-rp-cached': '1' } }) } }
+      return r;
+    }, function (err) {
+      if (cacheable) { var c = ls(key); if (c) { stale = true; bar('You are offline or the service is down. Showing your last saved data. Saving is paused.'); return new Response(c, { status: 200, headers: { 'content-type': 'application/json', 'x-rp-cached': '1' } }) } }
+      throw err;
+    });
+  };
+  // Prices: every page shows the owner's current prices (Admin > Price centre). Elements with data-price="base|baseUsd|siteInr|siteUsd|setupInr|setupUsd" are filled in.
+  W.PRC = null;
+  W.pricefill = function () {
+    var p = W.PRC; if (!p) return;
+    [].forEach.call(document.querySelectorAll('[data-price]'), function (el) { var v = p[el.getAttribute('data-price')]; if (v != null && v !== '' && v !== 0) el.textContent = String(v) });
+    if (W.pricelist) W.pricelist(p);
+  };
+  // Prices come from the database: straight from Supabase when ASAP_SB_URL and ASAP_SB_ANON are set (config.js), otherwise through the Worker.
+  // Saved prices show at once, then the page asks again on every load and whenever the tab is opened again.
+  function setPrices(p) { if (p && p.base) { W.PRC = p; ls('rp_prices', JSON.stringify({ t: Date.now(), p: p })); W.pricefill() } }
+  function fetchPrices() {
+    var SB = String(W.ASAP_SB_URL || '').replace(/\/+$/, ''), K = W.ASAP_SB_ANON || '';
+    function viaWorker() { return F((A || '') + '/api/public', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null }).then(function (j) { return j && j.prices }) }
+    if (SB && K) return F(SB + '/rest/v1/site_cfg?k=eq.prices&select=v', { headers: { apikey: K, authorization: 'Bearer ' + K }, cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null }).then(function (j) { var v = j && j[0] && j[0].v; return v && v.base ? v : viaWorker() }).catch(viaWorker);
+    return viaWorker();
+  }
+  W.pricerefresh = function () { return fetchPrices().then(setPrices).catch(function () {}) };
+  (function () {
+    try { var c = JSON.parse(ls('rp_prices') || 'null'); if (c && c.p) W.PRC = c.p } catch (e) {}
+    // Prices are asked for at most once every 10 minutes (every page load and tab switch used to call the Worker).
+    function stale() { try { var c = JSON.parse(ls('rp_prices') || 'null'); return !c || !c.t || Date.now() - c.t > 6e5 } catch (e) { return true } }
+    function start() { W.pricefill(); if (stale()) W.pricerefresh(); if (W.ASAP_SB_URL) setInterval(function () { if (!document.hidden && stale()) W.pricerefresh() }, 120000) }
+    if (document.readyState == 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    document.addEventListener('visibilitychange', function () { if (!document.hidden && stale()) W.pricerefresh() });
+  })();
+  if (A) {
+    // Worker-only pages: open them on the Worker address, or the static copy of the setup wizard
+    document.addEventListener('click', function (e) {
+      var a = e.target && e.target.closest && e.target.closest('a[href]'); if (!a) return;
+      var h = a.getAttribute('href') || '';
+      if (/^\/(setup|customer-setup)(#|$)/.test(h)) { e.preventDefault(); location.href = 'customer-setup.html' + (h.indexOf('#') > -1 ? h.slice(h.indexOf('#')) : '') }
+      else if (/^\/(privacy(\.html)?|asap-rank-connector\.zip|services|pricing)(#|$|\?)/.test(h)) { e.preventDefault(); W.open(A + h, '_blank', 'noopener') }
+    }, true);
+  }
+})();
+</script><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>ASAP-Rank account</title><meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
+<style>
+:root{--bg:#f3f3f3;--c:#fff;--t:#000;--m:#555;--bd:#c8c8c8;--ok:#0a7a3d;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root{--bg:#000;--c:#111;--t:#fff;--m:#aaa;--bd:#3a3a3a;--ok:#4cd98a}}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--t);font:17px/1.5 Inter,system-ui,sans-serif}
+main{max-width:480px;margin:0 auto;padding:24px 16px}
+.k{background:var(--c);border:1px solid var(--bd);border-radius:28px;padding:24px}
+h1{font-size:30px;margin:0 0 16px;outline:0}label{display:block;font-size:14px;color:var(--m)}
+input,select{width:100%;box-sizing:border-box;min-height:48px;margin:4px 0 14px;padding:0 16px;border-radius:24px;border:1px solid var(--bd);background:var(--c);color:var(--t);font:inherit}
+button{width:100%;min-height:48px;border-radius:24px;border:0;background:var(--t);color:var(--bg);font:inherit;font-weight:700;cursor:pointer;margin-top:8px}
+button:disabled{opacity:.55;cursor:default}
+button.l{background:none;color:var(--t);border:1px solid var(--bd);font-weight:600}
+.msg{min-height:24px;margin:8px 0;font-size:15px}a{color:inherit}:focus-visible{outline:3px solid var(--t);outline-offset:2px}
+pre{white-space:pre-wrap;background:var(--bg);border-radius:16px;padding:14px;font:15px/1.5 system-ui}
+.r2{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:420px){.r2{grid-template-columns:1fr}}
+fieldset{border:1px solid var(--bd);border-radius:16px;margin:0 0 14px;padding:8px 14px}legend{font-size:14px;color:var(--m)}
+.ck{display:flex;gap:10px;align-items:center;color:var(--t);font-size:16px}.ck input{width:24px;min-height:24px;margin:8px 0}
+.step{border:1px solid var(--bd);border-radius:20px;padding:14px;margin:0 0 14px;background:var(--bg)}
+.step b{display:block}.step small{color:var(--m)}
+.wa{background:#1f9d55;color:#fff}
+.spin{display:inline-block;width:18px;height:18px;border:3px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-3px;margin-right:8px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.bar{height:6px;border-radius:3px;background:var(--bd);overflow:hidden;margin:10px 0}.bar i{display:block;height:100%;width:30%;background:var(--t);animation:bar 1.1s ease-in-out infinite}
+@keyframes bar{0%{margin-left:-30%}100%{margin-left:100%}}
+.ok{color:var(--ok);font-weight:600}
+@media(prefers-reduced-motion:reduce){.spin,.bar i{animation:none}}
+.k{animation:in .3s ease both}@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* v14 brand theme */
+:root{--bg:#f6f8fc;--c:#fff;--t:#0f172a;--m:#52607a;--bd:#e3e8f2;--ok:#0f766e}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1020;--c:#121935;--t:#e8ecff;--m:#9fb0dc;--bd:#26305a;--ok:#5eead4}}
+body{background:radial-gradient(900px 340px at 85% -8%,rgba(139,92,246,.20),transparent 60%),radial-gradient(700px 300px at 0% 0%,rgba(20,184,166,.12),transparent 60%),var(--bg);background-attachment:fixed;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.k{border-radius:20px;box-shadow:0 18px 50px rgba(15,23,42,.12)}
+h1{font-weight:800;letter-spacing:-.02em}
+button:not(.l){background:linear-gradient(135deg,#5b5bf5,#8b5cf6);color:#fff;box-shadow:0 8px 22px rgba(91,91,245,.3)}
+input,select{border-radius:14px}button{border-radius:999px}
+:focus-visible{outline-color:#5b5bf5}
+</style></head><body><main><p><a href="index.html">← ASAP-Rank</a></p>
+
+<section class=k id=v-signup hidden><form id=fs novalidate><h1 tabindex=-1>Create account</h1>
+<div class=r2><label>First name<input name=first autocomplete=given-name required></label><label>Last name<input name=last autocomplete=family-name required></label></div>
+<label>WhatsApp number (with country code, e.g. 919876543210)<input name=ph type=tel inputmode=numeric autocomplete=tel required placeholder="919876543210"></label>
+<label>Email<input name=e type=email autocomplete=email required></label>
+<label>Password (8+ characters)<input name=p type=password autocomplete=new-password minlength=8 required></label>
+<label>Organization name<input name=org autocomplete=organization required></label>
+<label>Website URL (optional)<input name=site type=url inputmode=url autocomplete=url placeholder="https://yoursite.com"></label>
+<label>Team size<select name=team required><option value="">Choose…</option><option>Just me</option><option>2-5</option><option>6-20</option><option>21-50</option><option>51-200</option><option>200+</option></select></label>
+<fieldset><legend>Which parts will you use? Everything is included in one price: ₹<span data-price="base">2000</span> (about $<span data-price="baseUsd">20</span>) per year</legend>
+<label class=ck><input type=checkbox name=ft value=crm> CRM, messaging and drips</label><label class=ck><input type=checkbox name=ft value=popup> Popups and lead capture</label><label class=ck><input type=checkbox name=ft value=chat> AI chatbot</label><label class=ck><input type=checkbox name=ft value=plugin> WordPress plugin</label></fieldset>
+<div class=step id=ws hidden><b>Verify your WhatsApp number</b><small id=wh>Press the button. WhatsApp opens with a ready message. Send it, then copy the code from that message and paste it below.</small><div id=wp hidden><div class=bar><i></i></div><span id=wpt></span></div></div>
+<label id=wcl hidden>Code from your WhatsApp message<input name=code autocomplete=one-time-code autocapitalize=characters maxlength=14 placeholder="10 characters"></label>
+<div class=msg role=alert id=ms></div>
+<button type=button class=wa id=gs>Open WhatsApp to get my code</button><button id=sb hidden>Verify and sign up</button>
+<button type=button class=l onclick="go('login')">I already have an account</button></form></section>
+
+<section class=k id=v-login hidden><form id=fl novalidate><h1 tabindex=-1>Log in</h1>
+<label>Email or WhatsApp number<input name=id autocomplete=username required placeholder="you@example.com or 919876543210"></label>
+<div id=lpw><label>Password<input name=p type=password autocomplete=current-password></label></div>
+<div class=msg role=alert id=lm></div>
+<button id=lb>Log in</button><button type=button class=l onclick="go('forgot')">Forgot password?</button><button type=button class=l id=cs onclick="go('signup')">Create account</button></form></section>
+
+<section class=k id=v-first hidden><form id=ffirst novalidate><h1 tabindex=-1>Create your admin login</h1><p>This is your own ASAP-Rank. Use the same email you used when you bought it. Your data stays in your own Cloudflare account.</p><label>Email<input name=e type=email autocomplete=email required></label><label>Password (8+ characters)<input name=p type=password autocomplete=new-password minlength=8 required></label><div class=msg role=alert></div><button>Create admin login</button></form></section>
+<section class=k id=v-forgot hidden><form id=ff><h1 tabindex=-1>Reset password</h1><label>Email<input name=e type=email autocomplete=email required></label><div class=cf></div><div class=msg role=alert></div><button>Email me a code and link</button><button type=button class=l onclick="go('login')">Back to log in</button></form><form id=fc hidden><h2 style="font-size:20px;margin:18px 0 6px">Enter your code</h2><p class=m style="font-size:15px">We emailed a 6-digit code. It works for 15 minutes. You can also use the link in the same email.</p><label>6-digit code<input name=c inputmode=numeric autocomplete=one-time-code maxlength=6 pattern="[0-9]{6}" required></label><label>New password (8+ characters)<input name=p type=password autocomplete=new-password minlength=8 required></label><div class=msg role=alert></div><button>Save new password</button></form></section>
+<section class=k id=v-reset hidden><form id=fr><h1 tabindex=-1>New password</h1><label>New password (8+ characters)<input name=p type=password autocomplete=new-password minlength=8 required></label><div class=msg role=alert></div><button>Save password</button></form></section>
+<section class=k id=v-pay hidden><h1 tabindex=-1>Your 7-day trial has started</h1><p>Your account is created. Next: the setup guide (about 15 minutes). We also emailed you the link. To keep going after the trial, pay Rs <span data-price="base">2000</span> (or $<span data-price="baseUsd">20</span>) for one year, everything included:</p><pre id=pi>Loading…</pre><p>Then reply to the email with your transaction ID. We activate your account within 24 hours.</p><button onclick="location.href='/customer-setup'">Start the setup guide</button><button type=button class=l onclick="location.href='app.html'">Skip, open dashboard</button></section>
+<p style="text-align:center;font-size:13px"><a href="/privacy.html">Privacy policy</a></p></main>
+<script>
+const $=s=>document.querySelector(s),V=['signup','login','forgot','reset','pay'];let cur='login',WAURL='',waMode='soft';
+function go(v){cur=v;document.querySelectorAll('section').forEach(s=>s.hidden=s.id!='v-'+v);history.replaceState(null,'','#'+v);$('#v-'+v+' h1').focus();if(v=='pay')pi()}
+async function pi(){try{const c=await(await fetch('/api/public')).json();$('#pi').textContent='UPI: '+c.upi+'\nBank transfer: '+c.bank+'\nPayPal: '+c.paypal}catch(e){}}
+async function j(url,body){const r=await fetch(url,{method:'POST',body:JSON.stringify(body)}),x=await r.json().catch(()=>({}));return{ok:r.ok,x}}
+fetch('/api/public').then(r=>r.json()).then(c=>{waMode=c.wa||'soft';if(c.self){$('#cs').hidden=true;if(c.first)go('first')}}).catch(()=>{});
+/* Opens WhatsApp (app on phones, WhatsApp Web on computers) and shows progress while the code is made */
+async function wa(purpose,body,ui){
+ let w=null;try{w=window.open('about:blank','_blank');if(w)w.opener=null}catch(e){}
+ const b=ui.btn,old=b.textContent;b.disabled=true;b.innerHTML='<span class=spin></span>Preparing your code…';ui.msg.textContent='';ui.step.hidden=false;ui.prog.hidden=false;ui.pt.textContent='Creating a secure one-time code…';
+ const r=await j('/api/wa/start',{purpose,...body});
+ if(!r.ok){if(w)w.close();ui.prog.hidden=true;b.disabled=false;b.textContent=old;ui.msg.textContent=r.x.error||'Something went wrong.';return false}
+ ui.pt.textContent='Opening WhatsApp… send the message, then come back and paste the code.';WAURL=r.x.url;
+ if(w)w.location.href=r.x.url;
+ setTimeout(()=>{ui.prog.hidden=true;ui.pt.textContent='';b.disabled=false;b.textContent='Open WhatsApp again';ui.codeLabel.hidden=false;ui.code.focus();ui.msg.innerHTML='Sent the message? Copy the 10-character code from it ("OTP: …") and paste it here. The code works for 10 minutes. <a href="'+r.x.url+'" target=_blank rel=noopener><b>Tap here if WhatsApp did not open</b></a>'},1800);
+ return true}
+const fs=$('#fs'),fv=n=>fs.querySelector('[name='+n+']').value.trim();
+$('#gs').onclick=async()=>{const ph=fv('ph').replace(/\D/g,'');if(!fv('first')||!fv('last')||!fv('e')||fv('p').length<8||!fv('org')||!fv('team')||ph.length<8)return $('#ms').textContent='Fill in every required field first (password 8+ characters, WhatsApp number with country code).';
+ if(await wa('signup',{phone:ph,name:fv('first')},{btn:$('#gs'),msg:$('#ms'),step:$('#ws'),prog:$('#wp'),pt:$('#wpt'),codeLabel:$('#wcl'),code:fs.querySelector('[name=code]')}))$('#sb').hidden=false};
+fs.onsubmit=async e=>{e.preventDefault();if(!fv('code'))return $('#ms').textContent='Paste the code from your WhatsApp message.';$('#sb').disabled=true;$('#ms').innerHTML='<span class=spin></span>Checking your code…';
+ const r=await j('/api/signup',{first:fv('first'),last:fv('last'),phone:fv('ph').replace(/\D/g,''),email:fv('e'),password:fv('p'),org:fv('org'),website:fv('site'),team:fv('team'),features:[...fs.querySelectorAll('[name=ft]:checked')].map(x=>x.value),code:fv('code')});
+ $('#sb').disabled=false;if(!r.ok)return $('#ms').textContent=r.x.error||'Something went wrong.';$('#ms').innerHTML='<span class=ok>✓ Verified. Account created.</span>';go('pay')};
+const fl=$('#fl'),lv=n=>fl.querySelector('[name='+n+']').value.trim();
+fl.onsubmit=async e=>{e.preventDefault();if(!lv('id')||!lv('p'))return $('#lm').textContent='Enter your email or WhatsApp number and your password.';$('#lb').disabled=true;$('#lm').innerHTML='<span class=spin></span>Logging in…';const r=await j('/api/login',{id:lv('id'),password:lv('p')});$('#lb').disabled=false;if(!r.ok)return $('#lm').textContent=r.x.error||'Something went wrong.';location.href='app.html'};
+$('#ffirst').onsubmit=async e=>{e.preventDefault();const f=e.target,m=f.querySelector('.msg');m.innerHTML='<span class=spin></span>Checking your licence…';const r=await j('/api/signup',{email:f.querySelector('[name=e]').value.trim(),password:f.querySelector('[name=p]').value});if(!r.ok)return m.textContent=r.x.error||'Something went wrong.';location.href='app.html'};
+$('#ff').onsubmit=async e=>{e.preventDefault();const f=e.target,r=await j('/api/forgot',{email:f.querySelector('[name=e]').value.trim()});f.querySelector('.msg').textContent=r.ok?'If that email has an account, a code and a link are on their way.':(r.x.error||'Something went wrong.');if(r.ok){FE=f.querySelector('[name=e]').value.trim();$('#fc').hidden=false;$('#fc [name=c]').focus()}};
+let FE='';$('#fc').onsubmit=async e=>{e.preventDefault();const f=e.target,r=await j('/api/reset-code',{email:FE,code:f.querySelector('[name=c]').value.trim(),password:f.querySelector('[name=p]').value});if(!r.ok)return f.querySelector('.msg').textContent=r.x.error||'Something went wrong.';f.querySelector('.msg').textContent='Password changed. Taking you to log in…';setTimeout(()=>go('login'),1200)};
+$('#fr').onsubmit=async e=>{e.preventDefault();const f=e.target,r=await j('/api/reset',{password:f.querySelector('[name=p]').value,token:new URLSearchParams(location.search).get('token')});if(!r.ok)return f.querySelector('.msg').textContent=r.x.error||'Something went wrong.';f.querySelector('.msg').textContent='Password updated. Redirecting…';setTimeout(()=>go('login'),1200)};
+go((location.hash.slice(1)||'login').replace(/^(?!signup|login|forgot|reset|pay|first).*/,'login'));
+</script></body></html>

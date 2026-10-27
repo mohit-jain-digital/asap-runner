@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en"><head><script src="config.js"></script><script>/* ASAP-Rank page shim. Same file runs on the Worker and on a static host.
+   - ASAP_API (from config.js) = Worker address when this page is served from GitHub Pages or your own server.
+   - Login token is kept in localStorage and sent as a Bearer header (cookies do not cross websites).
+   - If the Worker is down or over its free daily limit, the last good data is shown and saving is paused. */
+(function () {
+  var A = String(window.ASAP_API || '').replace(/\/+$/, ''), O = A || location.origin, W = window, F = W.fetch.bind(W);
+  W.ASAP_O = O;
+  var ls = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v) } catch (e) {} return null };
+  var stale = false, CACHE = /^\/api\/(me|state)(\?|$)/;
+  function bar(m) {
+    var d = document.getElementById('rp-off');
+    if (!m) { if (d) d.remove(); return }
+    if (!d) { d = document.createElement('div'); d.id = 'rp-off'; d.setAttribute('role', 'status'); d.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;padding:10px 16px;background:#b45309;color:#fff;font:14px system-ui,sans-serif;text-align:center'; (document.body || document.documentElement).appendChild(d) }
+    d.textContent = m;
+  }
+  function failed(r) { return !r || r.status == 429 || r.status >= 500 }
+  W.fetch = function (u, o) {
+    if (typeof u != 'string' || !(u.indexOf('/api/') == 0 || u.indexOf('/__rp/') == 0)) return F(u, o);
+    var path = u, method = String((o && o.method) || 'GET').toUpperCase(), isApi = u.indexOf('/api/') == 0;
+    if (stale && method == 'PUT' && path.indexOf('/api/state') == 0) return Promise.resolve(new Response(JSON.stringify({ error: 'The service is busy, so saved data is shown. Nothing was saved. Reload in a few minutes.' }), { status: 503, headers: { 'content-type': 'application/json' } }));
+    var opt = Object.assign({}, o || {}); opt.headers = Object.assign({}, opt.headers || {});
+    if (A) { opt.headers['x-rp-remote'] = '1'; var t = ls('rp_tok'); if (t && isApi) opt.headers.authorization = 'Bearer ' + t; u = A + u }
+    var cacheable = isApi && method == 'GET' && CACHE.test(path), key = 'rp_c_' + path.split('?')[0];
+    return F(u, opt).then(function (r) {
+      var tk = r.headers.get('x-rp-token'); if (tk !== null) ls('rp_tok', tk == '-' ? null : tk);
+      if (cacheable && r.ok) { stale = false; bar(''); r.clone().text().then(function (x) { if (x.length < 3e6) ls(key, x) }).catch(function () {}) }
+      if (cacheable && failed(r)) { var c = ls(key); if (c) { stale = true; bar('The service is busy or offline. Showing your last saved data. Saving is paused.'); return new Response(c, { status: 200, headers: { 'content-type': 'application/json', 'x-rp-cached': '1' } }) } }
+      return r;
+    }, function (err) {
+      if (cacheable) { var c = ls(key); if (c) { stale = true; bar('You are offline or the service is down. Showing your last saved data. Saving is paused.'); return new Response(c, { status: 200, headers: { 'content-type': 'application/json', 'x-rp-cached': '1' } }) } }
+      throw err;
+    });
+  };
+  // Prices: every page shows the owner's current prices (Admin > Price centre). Elements with data-price="base|baseUsd|siteInr|siteUsd|setupInr|setupUsd" are filled in.
+  W.PRC = null;
+  W.pricefill = function () {
+    var p = W.PRC; if (!p) return;
+    [].forEach.call(document.querySelectorAll('[data-price]'), function (el) { var v = p[el.getAttribute('data-price')]; if (v != null && v !== '' && v !== 0) el.textContent = String(v) });
+    if (W.pricelist) W.pricelist(p);
+  };
+  // Prices come from the database: straight from Supabase when ASAP_SB_URL and ASAP_SB_ANON are set (config.js), otherwise through the Worker.
+  // Saved prices show at once, then the page asks again on every load and whenever the tab is opened again.
+  function setPrices(p) { if (p && p.base) { W.PRC = p; ls('rp_prices', JSON.stringify({ t: Date.now(), p: p })); W.pricefill() } }
+  function fetchPrices() {
+    var SB = String(W.ASAP_SB_URL || '').replace(/\/+$/, ''), K = W.ASAP_SB_ANON || '';
+    function viaWorker() { return F((A || '') + '/api/public', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null }).then(function (j) { return j && j.prices }) }
+    if (SB && K) return F(SB + '/rest/v1/site_cfg?k=eq.prices&select=v', { headers: { apikey: K, authorization: 'Bearer ' + K }, cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null }).then(function (j) { var v = j && j[0] && j[0].v; return v && v.base ? v : viaWorker() }).catch(viaWorker);
+    return viaWorker();
+  }
+  W.pricerefresh = function () { return fetchPrices().then(setPrices).catch(function () {}) };
+  (function () {
+    try { var c = JSON.parse(ls('rp_prices') || 'null'); if (c && c.p) W.PRC = c.p } catch (e) {}
+    // Prices are asked for at most once every 10 minutes (every page load and tab switch used to call the Worker).
+    function stale() { try { var c = JSON.parse(ls('rp_prices') || 'null'); return !c || !c.t || Date.now() - c.t > 6e5 } catch (e) { return true } }
+    function start() { W.pricefill(); if (stale()) W.pricerefresh(); if (W.ASAP_SB_URL) setInterval(function () { if (!document.hidden && stale()) W.pricerefresh() }, 120000) }
+    if (document.readyState == 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    document.addEventListener('visibilitychange', function () { if (!document.hidden && stale()) W.pricerefresh() });
+  })();
+  if (A) {
+    // Worker-only pages: open them on the Worker address, or the static copy of the setup wizard
+    document.addEventListener('click', function (e) {
+      var a = e.target && e.target.closest && e.target.closest('a[href]'); if (!a) return;
+      var h = a.getAttribute('href') || '';
+      if (/^\/(setup|customer-setup)(#|$)/.test(h)) { e.preventDefault(); location.href = 'customer-setup.html' + (h.indexOf('#') > -1 ? h.slice(h.indexOf('#')) : '') }
+      else if (/^\/(privacy(\.html)?|asap-rank-connector\.zip|services|pricing)(#|$|\?)/.test(h)) { e.preventDefault(); W.open(A + h, '_blank', 'noopener') }
+    }, true);
+  }
+})();
+</script><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ASAP-Rank: AI SEO, AEO, popups, chatbot and CRM for any website</title>
+<meta name="description" content="One snippet turns any website into a lead machine. AI fixes on-page SEO and AEO, popups and a chatbot capture leads, a CRM and drip messages follow up. 7-day free trial.">
+<meta name="theme-color" content="#0b1020">
+<meta property="og:type" content="website"><meta property="og:title" content="ASAP-Rank: AI SEO, AEO, popups, chatbot and CRM for any website"><meta property="og:description" content="Rank higher, answer visitors, capture leads and follow up, from one dashboard. Works on WordPress, Shopify, Wix and any site.">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json" id="ld-org">{"@context":"https://schema.org","@type":"Organization","name":"ASAP-Rank","description":"AI on-page SEO and AEO, popups, chatbot, CRM and drip messages for any website."}</script>
+<script type="application/ld+json" id="ld-app">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"ASAP-Rank","applicationCategory":"BusinessApplication","operatingSystem":"Web","description":"One snippet adds AI-written SEO and AEO fixes, lead-capture popups, a website chatbot, a CRM and drip messages to any website.","offers":{"@type":"Offer","price":"2000","priceCurrency":"INR"}}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is ASAP-Rank?", "acceptedAnswer": {"@type": "Answer", "text": "ASAP-Rank is a web app that improves a website's search visibility and lead capture. One snippet lets AI suggest titles, descriptions, schema, FAQs and internal links that you approve and publish, while popups, a chatbot, a CRM and drip messages capture and follow up leads."}}, {"@type": "Question", "name": "What is AEO?", "acceptedAnswer": {"@type": "Answer", "text": "AEO means answer engine optimization. It shapes pages so AI assistants and search answers can quote them: clear question-and-answer sections, FAQ schema and direct, factual wording."}}, {"@type": "Question", "name": "Does it work on my website platform?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. It works on WordPress, Shopify, Wix, Webflow, custom sites and anything that lets you add a script, including through Google Tag Manager. A WordPress plugin is also included."}}, {"@type": "Question", "name": "Can I use it on more than one domain?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Your first site is included and each extra domain or subdomain is an add-on. Popups, chatbot and drip messages can be shown on all approved sites or only the ones you choose."}}, {"@type": "Question", "name": "Does it connect to Zoho CRM and HubSpot?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. New leads from popups and the chatbot can be pushed to Zoho CRM and HubSpot, and the built-in CRM also syncs with Google Sheets."}}, {"@type": "Question", "name": "What are MCP and WebMCP?", "acceptedAnswer": {"@type": "Answer", "text": "MCP lets your own AI assistant read your pages and review queue and propose changes for your approval. WebMCP lets a visitor's AI agent use tools you publish for your forms and links."}}, {"@type": "Question", "name": "Can it help with page speed?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. It tracks PageSpeed scores for each page against a baseline and applies the speed rules you approve, such as image priority, lazy loading and delaying heavy third-party scripts."}}, {"@type": "Question", "name": "Are there ready-made popups and chatbot styles?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Choose from 12 popup templates and 8 chatbot styles, recolour them with ready palettes, then edit the words to fit your business."}}, {"@type": "Question", "name": "What does it run on?", "acceptedAnswer": {"@type": "Answer", "text": "The app runs on Cloudflare with an optional Supabase background engine and a static dashboard on GitHub Pages or your own server, so it can start on free tiers."}}, {"@type": "Question", "name": "Do I need technical skills?", "acceptedAnswer": {"@type": "Answer", "text": "No. You paste one snippet, approve the changes you like and press publish. Setup assistance is available per domain if you want us to do it for you."}}, {"@type": "Question", "name": "Is there a free trial?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Every new account gets a 7-day free trial with no card needed."}}]}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"ASAP-Rank","item":"./"}]}</script>
+<style>
+:root{--bg:#0b1020;--bg2:#121935;--card:#ffffff;--ink:#0f172a;--mu:#52607a;--line:#e3e8f2;--br:#5b5bf5;--br2:#8b5cf6;--ac:#14b8a6;--hot:#f97316;--sh:0 10px 30px rgba(15,23,42,.10);--r:18px}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:76px}
+body{margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);background:#f6f8fc;-webkit-font-smoothing:antialiased}
+img,svg{max-width:100%}a{color:var(--br)}
+.wrap{max-width:1140px;margin:0 auto;padding:0 20px}
+h1,h2,h3{line-height:1.15;margin:0 0 .5em;letter-spacing:-.02em}
+h1{font-size:clamp(2.2rem,5.4vw,3.8rem)}h2{font-size:clamp(1.7rem,3.6vw,2.5rem)}h3{font-size:1.15rem}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;padding:0 24px;border-radius:999px;font-weight:700;text-decoration:none;border:2px solid transparent;cursor:pointer;font-size:1rem;transition:transform .2s,box-shadow .2s,background .2s}
+.btn:hover{transform:translateY(-2px)}
+.btn.p{background:linear-gradient(135deg,var(--br),var(--br2));color:#fff;box-shadow:0 8px 24px rgba(91,91,245,.35)}
+.btn.g{background:transparent;color:#fff;border-color:rgba(255,255,255,.35)}
+.btn.o{background:#fff;color:var(--ink);border-color:var(--line)}
+header.nav{position:sticky;top:0;z-index:50;background:rgba(11,16,32,.88);backdrop-filter:blur(10px);border-bottom:1px solid rgba(255,255,255,.08)}
+header.nav .wrap{display:flex;align-items:center;gap:18px;min-height:64px}
+.logo{font-weight:800;font-size:1.25rem;color:#fff;text-decoration:none;display:flex;align-items:center;gap:8px}
+.logo i{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,var(--br),var(--ac));display:inline-block}
+nav.links{margin-left:auto;display:flex;gap:4px;align-items:center}
+nav.links a{color:#cbd5f5;text-decoration:none;padding:8px 12px;border-radius:10px;font-size:.95rem}
+nav.links a:hover{background:rgba(255,255,255,.08);color:#fff}
+nav.links .btn{min-height:40px;padding:0 18px;margin-left:6px}
+@media(max-width:860px){nav.links a:not(.btn){display:none}}
+.hero{background:radial-gradient(1200px 500px at 70% -10%,rgba(139,92,246,.35),transparent 60%),radial-gradient(900px 500px at 0% 20%,rgba(20,184,166,.25),transparent 60%),var(--bg);color:#fff;padding:72px 0 96px;overflow:hidden}
+.hero .wrap{display:grid;grid-template-columns:1.05fr .95fr;gap:40px;align-items:center}
+@media(max-width:900px){.hero .wrap{grid-template-columns:1fr}}
+.pill{display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);font-size:.85rem;margin-bottom:18px}
+.hero h1 span{background:linear-gradient(90deg,#a5b4fc,#5eead4,#fdba74);-webkit-background-clip:text;background-clip:text;color:transparent;background-size:200% auto;animation:shine 6s linear infinite}
+@keyframes shine{to{background-position:200% center}}
+.hero p.lead{font-size:1.2rem;color:#cbd5f5;max-width:34em}
+.cta{display:flex;gap:12px;flex-wrap:wrap;margin:26px 0 14px}
+.fine{font-size:.9rem;color:#9fb0dc}
+.stage{position:relative;min-height:430px}
+.bw{position:absolute;inset:0 0 auto 0;margin:auto;max-width:480px;background:#fff;border-radius:16px;box-shadow:0 30px 70px rgba(0,0,0,.45);overflow:hidden;color:var(--ink)}
+.bw .bar{display:flex;gap:6px;padding:10px 14px;background:#eef1f8}
+.bw .bar b{width:10px;height:10px;border-radius:50%;background:#cbd3e6}
+.bw .pg{padding:18px;min-height:310px;position:relative}
+.sk{height:12px;border-radius:6px;background:#e6eaf4;margin:10px 0}
+.sk.s{width:55%}.sk.m{width:80%}
+.pop{position:absolute;left:50%;top:50%;width:76%;transform:translate(-50%,-50%) scale(.9);background:linear-gradient(160deg,#fff,#eef2ff);border-radius:16px;box-shadow:0 18px 50px rgba(30,41,99,.35);padding:20px;text-align:center;opacity:0;animation:popin 7s ease-in-out infinite}
+@keyframes popin{0%,18%{opacity:0;transform:translate(-50%,-44%) scale(.9)}26%,70%{opacity:1;transform:translate(-50%,-50%) scale(1)}80%,100%{opacity:0;transform:translate(-50%,-56%) scale(.95)}}
+.pop h4{margin:0 0 4px;font-size:1.1rem}.pop small{color:var(--mu)}
+.pop .f{margin:12px auto 8px;height:36px;border-radius:10px;background:#fff;border:1px solid var(--line);text-align:left;padding:7px 12px;color:#94a3b8;font-size:.9rem}
+.pop .go{display:block;height:38px;border-radius:10px;background:linear-gradient(135deg,var(--br),var(--br2));color:#fff;font-weight:700;line-height:38px}
+.chat{position:absolute;right:-6px;bottom:-4px;width:250px;background:#fff;border-radius:16px;box-shadow:0 24px 60px rgba(0,0,0,.4);color:var(--ink);padding:14px;animation:float 5s ease-in-out infinite}
+@keyframes float{50%{transform:translateY(-10px)}}
+.msg{padding:8px 12px;border-radius:14px;font-size:.88rem;margin:6px 0;max-width:88%}
+.msg.b{background:#eef2ff}.msg.u{background:var(--br);color:#fff;margin-left:auto}
+.dots{display:inline-flex;gap:4px;padding:10px 12px;background:#eef2ff;border-radius:14px}
+.dots i{width:6px;height:6px;border-radius:50%;background:#7c83b5;animation:dot 1.2s infinite}.dots i:nth-child(2){animation-delay:.2s}.dots i:nth-child(3){animation-delay:.4s}
+@keyframes dot{0%,60%,100%{opacity:.3;transform:none}30%{opacity:1;transform:translateY(-3px)}}
+.score{position:absolute;left:-8px;bottom:26px;background:#0f172a;color:#fff;border-radius:14px;padding:12px 16px;box-shadow:0 18px 40px rgba(0,0,0,.4);animation:float 6s ease-in-out infinite reverse}
+.score b{font-size:1.6rem;color:#5eead4}.score small{display:block;color:#9fb0dc}
+.strip{background:#fff;border-bottom:1px solid var(--line)}
+.strip .wrap{display:flex;flex-wrap:wrap;gap:10px 34px;justify-content:center;padding:18px 20px;color:var(--mu);font-weight:600;font-size:.95rem}
+.strip span:before{content:"✓ ";color:var(--ac)}
+section{padding:84px 0}
+.hd{text-align:center;max-width:46em;margin:0 auto 40px}.hd p{color:var(--mu);font-size:1.1rem}
+.eyebrow{color:var(--br);font-weight:800;font-size:.85rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+.grid{display:grid;gap:20px}.g3{grid-template-columns:repeat(3,1fr)}.g2{grid-template-columns:repeat(2,1fr)}
+@media(max-width:900px){.g3{grid-template-columns:1fr 1fr}}@media(max-width:620px){.g3,.g2{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:24px;box-shadow:var(--sh)}
+.card .ic{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;font-size:1.4rem;background:linear-gradient(135deg,#eef2ff,#ecfeff);margin-bottom:12px}
+.card p{color:var(--mu);margin:0}
+.rv{opacity:0;transform:translateY(24px);transition:opacity .7s ease,transform .7s ease}.rv.in{opacity:1;transform:none}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:26px}
+.tabs button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:10px 18px;font:inherit;font-weight:700;color:var(--ink);cursor:pointer;transition:all .2s}
+.tabs button:hover{border-color:var(--br)}
+.tabs button[aria-selected=true]{background:linear-gradient(135deg,var(--br),var(--br2));color:#fff;border-color:transparent;box-shadow:0 8px 20px rgba(91,91,245,.3)}
+.panel{display:none;animation:fade .45s ease}.panel.on{display:grid}
+@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.split{grid-template-columns:1.05fr .95fr;gap:28px;align-items:center}
+@media(max-width:860px){.split{grid-template-columns:1fr}}
+.split ul{padding:0;margin:14px 0 0;list-style:none}.split li{padding:6px 0 6px 28px;position:relative}
+.split li:before{content:"✓";position:absolute;left:0;color:var(--ac);font-weight:800}
+.viz{background:linear-gradient(160deg,#0f172a,#1e1b4b);border-radius:var(--r);padding:26px;color:#e8ecff;min-height:260px;box-shadow:var(--sh)}
+.viz .row{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.1);font-size:.95rem}
+.badge{padding:2px 10px;border-radius:999px;font-size:.78rem;font-weight:700}.ok{background:#064e3b;color:#6ee7b7}.wn{background:#78350f;color:#fcd34d}.nw{background:#312e81;color:#c7d2fe}
+.bar2{height:8px;border-radius:6px;background:rgba(255,255,255,.12);overflow:hidden;margin-top:6px}.bar2 i{display:block;height:100%;background:linear-gradient(90deg,var(--ac),var(--br));width:0;transition:width 1.2s ease}
+.panel.on .bar2 i{width:var(--w)}
+.use{background:#fff}
+.how .n{width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,var(--br),var(--ac));color:#fff;display:grid;place-items:center;font-weight:800;margin-bottom:12px}
+.price{background:linear-gradient(180deg,#f6f8fc,#eef2ff)}
+.pc{position:relative;text-align:center}.pc.hot{border:2px solid var(--br);transform:translateY(-6px)}
+.pc .tag{position:absolute;top:-13px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,var(--br),var(--br2));color:#fff;border-radius:999px;padding:3px 14px;font-size:.8rem;font-weight:800}
+.amt{font-size:2.6rem;font-weight:800;letter-spacing:-.03em}.amt small{font-size:1rem;color:var(--mu);font-weight:600}
+.pc ul{list-style:none;padding:0;margin:16px 0;text-align:left}.pc li{padding:5px 0 5px 26px;position:relative;color:var(--mu)}.pc li:before{content:"✓";position:absolute;left:0;color:var(--ac);font-weight:800}
+details.q{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:10px 0}
+details.q summary{cursor:pointer;font-weight:700;list-style:none;display:flex;justify-content:space-between;gap:12px}
+details.q summary:after{content:"+";font-size:1.4rem;line-height:1;color:var(--br)}details.q[open] summary:after{content:"−"}
+details.q p{color:var(--mu);margin:10px 0 0}
+.final{background:radial-gradient(900px 400px at 50% 0%,rgba(139,92,246,.4),transparent 60%),var(--bg);color:#fff;text-align:center}
+.final p{color:#cbd5f5;max-width:36em;margin:0 auto 24px;font-size:1.1rem}
+footer{background:#070b18;color:#9fb0dc;padding:36px 0;font-size:.92rem}footer .wrap{display:flex;flex-wrap:wrap;gap:12px 28px;justify-content:space-between}footer a{color:#cbd5f5}
+:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.rv{opacity:1;transform:none}.pop{opacity:1}}
+
+/* Live demo: popup, chatbot and theme switching (runs in the browser only) */
+.demo{background:linear-gradient(180deg,#eef2ff,#f6f8fc)}
+.dm-ctl{display:flex;flex-wrap:wrap;gap:14px 22px;align-items:flex-end;justify-content:center;margin:0 0 20px}
+.dm-g{display:flex;flex-direction:column;gap:6px}
+.dm-lbl{font-size:.75rem;font-weight:800;color:var(--mu);text-transform:uppercase;letter-spacing:.05em}
+.dm-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.dm-sw{width:36px;height:36px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #c9d2e6;cursor:pointer;padding:0}
+.dm-sw[aria-pressed="true"]{box-shadow:0 0 0 3px var(--br)}
+.dm-sel{min-height:44px;border:1px solid var(--line);border-radius:12px;padding:0 12px;font:inherit;background:#fff;color:var(--ink)}
+.dm-b{min-height:44px;padding:0 16px;border-radius:999px;border:1px solid var(--line);background:#fff;font:inherit;font-weight:700;cursor:pointer;color:var(--ink)}
+.dm-b:hover,.dm-b[aria-pressed="true"]{border-color:var(--br);color:var(--br)}
+.dm-b.p{background:linear-gradient(135deg,var(--br),var(--br2));color:#fff;border-color:transparent}
+.dm-note{text-align:center;color:var(--mu);font-size:.9rem;margin:0 0 14px;min-height:1.4em}
+.dm-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+@media(max-width:900px){.dm-grid{grid-template-columns:1fr}}
+.dm-st{position:relative;min-height:580px;border-radius:var(--r);overflow:hidden;background:#fff;border:1px solid var(--line);box-shadow:var(--sh);--d1:#5b5bf5;--d2:#8b5cf6;--dt:#ffffff;--db:#111827;--dbt:#ffffff;--dr:16px}
+.dm-top{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);background:#f8faff}
+.dm-top b{display:inline-block;width:10px;height:10px;border-radius:50%;background:#d5dbea}
+.dm-url{flex:1;background:#fff;border:1px solid var(--line);border-radius:999px;padding:4px 14px;font-size:.8rem;color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dm-site{padding:22px 22px 120px}
+.dm-site h3{font-size:1.5rem;margin:0 0 6px}.dm-site p{color:var(--mu);margin:0 0 16px;max-width:34em}
+.dm-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.dm-cards i{display:block;height:92px;border-radius:12px;background:linear-gradient(135deg,#eef2ff,#e3e8f2)}
+@media(max-width:620px){.dm-cards{grid-template-columns:1fr 1fr}}
+.dm-ov{position:absolute;left:0;right:0;bottom:0;top:0;background:rgba(15,23,42,.5);display:flex;align-items:center;justify-content:center;padding:16px;z-index:5}
+.dm-card{position:relative;width:min(370px,100%);background:linear-gradient(135deg,var(--d1),var(--d2));color:var(--dt);border-radius:var(--dr);padding:28px 22px 22px;box-shadow:0 24px 60px rgba(0,0,0,.35)}
+.dm-st[data-clean="1"] .dm-card,.dm-st[data-clean="1"] .dm-sbar{border:1px solid #d5dbea}
+.dm-card h4{margin:0 0 6px;font-size:1.3rem;line-height:1.2}.dm-card p{margin:0 0 12px;opacity:.92;font-size:.95rem}
+.dm-in{display:block;width:100%;min-height:46px;border-radius:calc(var(--dr)*.6);border:1px solid rgba(0,0,0,.18);padding:0 12px;font:inherit;margin:8px 0;color:#111827;background:#fff}
+.dm-go{display:block;width:100%;min-height:48px;border:0;border-radius:calc(var(--dr)*.7);background:var(--db);color:var(--dbt);font:inherit;font-weight:800;cursor:pointer;margin-top:8px}
+.dm-x{position:absolute;top:8px;right:8px;width:36px;height:36px;border-radius:50%;border:0;background:rgba(0,0,0,.18);color:inherit;font-size:1.2rem;line-height:1;cursor:pointer}
+.dm-fine{font-size:.75rem;opacity:.8;margin:10px 0 0}
+.dm-sbar{position:absolute;top:0;left:0;right:0;z-index:4;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;justify-content:center;padding:10px 52px 10px 14px;background:linear-gradient(90deg,var(--d1),var(--d2));color:var(--dt);font-weight:700}
+.dm-sbar .dm-go{display:inline-block;width:auto;min-height:36px;padding:0 16px;margin:0}
+.dm-sbar .dm-x{top:50%;transform:translateY(-50%);right:10px}
+.dm-lau{position:absolute;right:16px;bottom:16px;z-index:6;min-height:56px;padding:0 20px;border-radius:999px;border:0;background:var(--db);color:var(--dbt);font:inherit;font-weight:800;cursor:pointer;box-shadow:0 10px 28px rgba(0,0,0,.28)}
+.dm-chat{position:absolute;right:16px;bottom:84px;width:min(350px,calc(100% - 32px));height:min(440px,calc(100% - 104px));background:#fff;border-radius:var(--dr);box-shadow:0 24px 60px rgba(0,0,0,.3);border:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden;z-index:7}
+.dm-chat[hidden]{display:none}
+.dm-ch{background:linear-gradient(135deg,var(--d1),var(--d2));color:var(--dt);padding:12px 14px;display:flex;align-items:center;gap:10px}
+.dm-ch b{flex:1}.dm-ch small{display:block;opacity:.85;font-weight:400}
+.dm-ch .dm-x{position:static;flex:none}
+.dm-log{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:#fff}
+.dm-m{max-width:86%;padding:9px 12px;border-radius:calc(var(--dr)*.8);font-size:.93rem;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.dm-m.b{background:#f1f4fb;color:#0f172a;align-self:flex-start}
+.dm-m.u{background:var(--db);color:var(--dbt);align-self:flex-end}
+.dm-m a{color:inherit;font-weight:700}
+.dm-ty{align-self:flex-start;display:flex;gap:4px;padding:10px 12px;background:#f1f4fb;border-radius:14px}
+.dm-ty i{width:6px;height:6px;border-radius:50%;background:#8a97b5;animation:dmb 1s infinite}.dm-ty i:nth-child(2){animation-delay:.15s}.dm-ty i:nth-child(3){animation-delay:.3s}
+@keyframes dmb{0%,80%,100%{opacity:.3}40%{opacity:1}}
+.dm-chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 8px}
+.dm-chip{min-height:36px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:#fff;font:inherit;font-size:.85rem;font-weight:600;color:var(--ink);cursor:pointer}
+.dm-chip:hover{border-color:var(--br);color:var(--br)}
+.dm-ask{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line)}
+.dm-ask input{flex:1;min-width:0;min-height:44px;border:1px solid var(--line);border-radius:calc(var(--dr)*.7);padding:0 12px;font:inherit}
+.dm-ask button{min-height:44px;padding:0 16px;border:0;border-radius:calc(var(--dr)*.7);background:var(--db);color:var(--dbt);font:inherit;font-weight:800;cursor:pointer}
+.dm-side .card{padding:18px}.dm-side h3{font-size:1rem;margin:0 0 4px}
+.dm-lead{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--line);font-size:.9rem}
+.dm-lead small{display:block;color:var(--mu)}
+.dm-badge{font-size:.72rem;font-weight:800;padding:3px 8px;border-radius:999px;background:#dcfce7;color:#166534;white-space:nowrap;align-self:flex-start}
+.dm-empty{color:var(--mu);font-size:.9rem;margin:10px 0 0}
+.dm-b:focus-visible,.dm-sw:focus-visible,.dm-chip:focus-visible,.dm-go:focus-visible,.dm-x:focus-visible,.dm-lau:focus-visible,.dm-in:focus-visible,.dm-ask input:focus-visible,.dm-sel:focus-visible{outline:3px solid #f97316;outline-offset:2px}
+</style></head>
+<body>
+<header class="nav"><div class="wrap"><a class="logo" href="#top"><i></i>ASAP-Rank</a>
+<nav class="links" aria-label="Main"><a href="#features">Features</a><a href="#demo">Live demo</a><a href="#use-cases">Use cases</a><a href="#how">How it works</a><a href="#stack">Integrations</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a><a href="auth.html#login">Log in</a><a class="btn p" href="auth.html#signup">Start free trial</a></nav></div></header>
+
+<main id="top">
+<section class="hero"><div class="wrap">
+<div><span class="pill">AI SEO + AEO + lead capture, in one snippet</span>
+<h1>Get found, get chosen, <span>get the lead.</span></h1>
+<p class="lead">ASAP-Rank fixes the on-page SEO that holds your site back, then turns visitors into leads with popups and a chatbot, and follows up through a CRM and drip messages. You approve every change.</p>
+<div class="cta"><a class="btn p" href="auth.html#signup">Start 7-day free trial</a><a class="btn g" href="#demo">Try it live</a><a class="btn g" href="#features">See what it does</a></div>
+<div class="fine">No card needed. Works on WordPress, Shopify, Wix, Webflow and any website.</div></div>
+<div class="stage" aria-hidden="true">
+<div class="bw"><div class="bar"><b></b><b></b><b></b></div><div class="pg"><div class="sk"></div><div class="sk m"></div><div class="sk s"></div><div class="sk"></div><div class="sk m"></div>
+<div class="pop"><h4>Get your free quote</h4><small>Reply in minutes on WhatsApp</small><div class="f">Your name and phone</div><span class="go">Send me the quote</span></div></div></div>
+<div class="chat"><div class="msg b">Hi! Looking for pricing or a quick demo?</div><div class="msg u">What does setup cost?</div><div class="dots"><i></i><i></i><i></i></div></div>
+<div class="score"><b>14/14</b><small>SEO checks passed</small></div></div>
+</div></section>
+
+<div class="strip"><div class="wrap"><span>One snippet, no developer</span><span>You approve every change</span><span>Zoho and HubSpot sync</span><span>Multi-site ready</span><span>7-day free trial</span></div></div>
+
+<section class="demo" id="demo"><div class="wrap">
+<div class="hd rv"><div class="eyebrow">Try it live</div><h2>A working popup and chatbot, right here</h2><p>Change the colours, pick a popup, trigger it, then ask the chatbot anything. It all runs in your browser: nothing you type is sent or saved.</p></div>
+<div class="dm-ctl rv">
+<div class="dm-g"><span class="dm-lbl" id="dm-pl">Theme colours</span><div class="dm-sws" id="dm-sws" role="group" aria-labelledby="dm-pl"></div></div>
+<div class="dm-g"><label class="dm-lbl" for="dm-tpl">Popup style</label><select class="dm-sel" id="dm-tpl"><option value="welcome">Welcome offer</option><option value="exit">Exit offer</option><option value="guide">Free guide</option><option value="news">Newsletter</option><option value="call">Call-back request</option><option value="bar">Sale bar</option></select></div>
+<div class="dm-g"><span class="dm-lbl" id="dm-cl">Corners</span><div class="dm-row" role="group" aria-labelledby="dm-cl"><button class="dm-b" type="button" data-r="16" aria-pressed="true">Rounded</button><button class="dm-b" type="button" data-r="2" aria-pressed="false">Sharp</button></div></div>
+<div class="dm-g"><span class="dm-lbl" id="dm-tl">When it shows</span><div class="dm-row" role="group" aria-labelledby="dm-tl"><button class="dm-b p" type="button" id="dm-now">Show popup now</button><button class="dm-b" type="button" id="dm-delay">After 3 seconds</button><button class="dm-b" type="button" id="dm-exit">On exit intent</button></div></div>
+</div>
+<p class="dm-note" id="dm-note" role="status" aria-live="polite">Pick a style and press Show popup now.</p>
+<div class="dm-grid">
+<div class="dm-st rv" id="dm-stage">
+<div class="dm-top"><b></b><b></b><b></b><span class="dm-url">https://your-website.example/</span></div>
+<div class="dm-site"><h3>Sharma Plumbing &amp; Repairs</h3><p>This is a pretend customer website. Your popup and chatbot sit on top of the real pages, in your colours.</p><div class="dm-cards"><i></i><i></i><i></i></div></div>
+<button class="dm-lau" type="button" id="dm-lau" aria-expanded="false" aria-controls="dm-chat">Chat with us</button>
+<div class="dm-chat" id="dm-chat" role="dialog" aria-label="Chatbot demo" hidden>
+<div class="dm-ch"><b>ASAP-Rank assistant<small>Demo bot, replies from a built-in script</small></b><button class="dm-x" type="button" id="dm-cx" aria-label="Close chat">&times;</button></div>
+<div class="dm-log" id="dm-log" role="log" aria-live="polite"></div>
+<div class="dm-chips" id="dm-chips"></div>
+<div class="dm-ask"><input id="dm-in" type="text" autocomplete="off" maxlength="200" aria-label="Type your question" placeholder="Type your question"><button type="button" id="dm-send">Send</button></div>
+</div>
+</div>
+<aside class="dm-side">
+<div class="card"><h3>What you would see in your CRM</h3><p class="dm-empty" id="dm-empty">Submit the popup or chat with the bot to see a lead appear here, tagged with where it came from.</p><div id="dm-leads"></div><p class="dm-fine" style="font-size:.78rem;color:var(--mu);margin:12px 0 0">Demo only. On a real site, leads are tagged by site and popup and can be pushed to Zoho CRM, HubSpot and Google Sheets.</p><button class="dm-b" type="button" id="dm-reset" style="margin-top:10px;width:100%">Reset demo</button></div>
+<div class="card" style="margin-top:16px"><h3>Real chatbot, real answers</h3><p style="margin:0;color:var(--mu);font-size:.93rem">On your site the bot answers from your own pages, FAQs and notes, and hands over to you on WhatsApp when it is not sure. <a href="auth.html#signup">Start the free trial</a> to set yours up.</p></div>
+</aside>
+</div>
+</div></section>
+<section id="features"><div class="wrap">
+<div class="hd rv"><div class="eyebrow">Everything in one dashboard</div><h2>From search result to closed deal</h2><p>Pick a tab to see how each part works. Share any tab with its link.</p></div>
+<div class="tabs rv" role="tablist" aria-label="Features" data-group="feat">
+<button role="tab" data-id="feat-seo" aria-selected="true">SEO and AEO</button><button role="tab" data-id="feat-speed" aria-selected="false">Speed and quick wins</button><button role="tab" data-id="feat-popups" aria-selected="false">Popups and templates</button><button role="tab" data-id="feat-chatbot" aria-selected="false">Chatbot</button><button role="tab" data-id="feat-crm" aria-selected="false">CRM and drips</button><button role="tab" data-id="feat-ideas" aria-selected="false">Content ideas</button><button role="tab" data-id="feat-connect" aria-selected="false">Integrations</button><button role="tab" data-id="feat-mcp" aria-selected="false">AI-ready: MCP</button></div>
+
+<div class="panel split card on" id="feat-seo" role="tabpanel"><div><h3>AI writes the fixes. You press publish.</h3><p>ASAP-Rank checks every page against a 14-point list, then suggests titles, descriptions, schema, FAQs, alt text and internal links in your writing style. Nothing goes live until you approve it, and anything can be reverted.</p><ul><li>AEO-ready FAQ blocks and schema so answer engines can quote you</li><li>Banned words, tone and compliance rules applied to every suggestion</li><li>Publish through the snippet, Google Tag Manager or the WordPress plugin</li></ul></div>
+<div class="viz"><div class="row"><span>/pricing</span><span class="badge ok">Title fixed</span></div><div class="row"><span>/services/plumbing</span><span class="badge nw">FAQ suggested</span></div><div class="row"><span>/blog/leak-repair-cost</span><span class="badge wn">Needs meta</span></div><div class="row"><span>Pages passing checks</span><span>86%</span></div><div class="bar2"><i style="--w:86%"></i></div></div></div>
+
+<div class="panel split card" id="feat-popups" role="tabpanel"><div><h3>Popups that ask at the right moment</h3><p>Start from a ready-made template, or build your own. Show an offer on entry, on exit intent, after scrolling or after a delay. Pick the pages and the sites, keep the look on brand, and send every lead straight into the CRM with its source tag.</p><ul><li>12 ready-made popup templates: welcome offer, exit offer, free guide, quote request, demo, webinar, sale bar, survey and more</li><li>10 colour palettes, plus your own colours, fonts and animations</li><li>Show on all approved domains, or only the ones you tick</li><li>Leads tagged by site and popup for later follow-up</li></ul></div>
+<div class="viz"><div class="row"><span>Welcome offer</span><span class="badge ok">Live</span></div><div class="row"><span>Exit intent: free guide</span><span class="badge ok">Live</span></div><div class="row"><span>Leads this week</span><span>Tagged by popup</span></div><div class="row"><span>Where</span><span>All sites</span></div></div></div>
+
+<div class="panel split card" id="feat-chatbot" role="tabpanel"><div><h3>A chatbot that only says what is true for your business</h3><p>The chatbot answers from your own pages, FAQs and notes. When it cannot help, it hands the chat to you on WhatsApp with the full context, and the visitor becomes a lead you can follow up.</p><ul><li>8 ready-made chatbot styles for clinics, stores, real estate, education, support and more</li><li>Reads your site in the background, no manual copy and paste</li><li>Optional OTP check by email, SMS or WhatsApp before sharing details</li><li>Daily AI reply cap so costs stay in your control</li></ul></div>
+<div class="viz"><div class="row"><span>Visitor</span><span>Do you deliver on Sundays?</span></div><div class="row"><span>Bot</span><span>Answered from /delivery</span></div><div class="row"><span>Visitor</span><span>Can I speak to someone?</span></div><div class="row"><span>Bot</span><span class="badge nw">Handoff to WhatsApp</span></div></div></div>
+
+<div class="panel split card" id="feat-crm" role="tabpanel"><div><h3>Follow up without lifting a finger</h3><p>Every lead lands in the CRM with its status, tags and source. Build drip messages for the people you choose, such as everyone who came from one site or one popup, and let them run.</p><ul><li>Statuses from New to Won, notes and reminders</li><li>Drip audiences by site, popup or chat tag</li><li>Team logins with viewer, editor and manager roles</li><li>Push leads to Zoho CRM and HubSpot, and two-way sync with Google Sheets</li></ul></div>
+<div class="viz"><div class="row"><span>Asha K.</span><span class="badge nw">New</span></div><div class="row"><span>Rohit M.</span><span class="badge wn">Contacted</span></div><div class="row"><span>Clinic Lead</span><span class="badge ok">Qualified</span></div><div class="row"><span>Drip: first 5 days</span><span>Running</span></div></div></div>
+
+<div class="panel split card" id="feat-ideas" role="tabpanel"><div><h3>Content ideas from what people already search</h3><p>Connect Google Search Console and Analytics with a free script that runs in your own Google account. ASAP-Rank finds the long searches (4 or more words) that your site almost ranks for, then suggests which page to improve or which new page to write. Add your own research too.</p><ul><li>Quick wins ranked by views and position</li><li>AI brief for each idea: title, outline, FAQs, links</li><li>Upload your own keyword research</li></ul></div>
+<div class="viz"><div class="row"><span>how to fix a leaking tap at home</span><span class="badge ok">Improve page</span></div><div class="row"><span>best crm for small clinics</span><span class="badge nw">New page</span></div><div class="row"><span>tap repair cost per visit</span><span class="badge wn">Page 2</span></div></div></div>
+
+<div class="panel split card" id="feat-speed" role="tabpanel"><div><h3>Faster pages and the quickest wins first</h3><p>Upload your Search Console files and ASAP-Rank ranks the fixes that can move the needle soonest: pages stuck on page two, weak titles on pages that already get views, and the best pages to link from. A speed booster applies your approved rules, and PageSpeed results are tracked for every page against a baseline.</p><ul><li>Quick wins ranked by views, position and likely gain</li><li>Speed booster: image priority, lazy loading, preconnects, delayed third-party scripts</li><li>PageSpeed score per page, latest against baseline</li><li>Import a sitemap and inspect tens of thousands of pages in the background, even after you log out</li><li>Choose which pages get AI suggestions first</li></ul></div>
+<div class="viz"><div class="row"><span>Pages imported</span><span>48,210</span></div><div class="row"><span>Inspected</span><span>31,904</span></div><div class="bar2"><i style="--w:66%"></i></div><div class="row"><span>/pricing: speed 52 to 81</span><span class="badge ok">Improved</span></div><div class="row"><span>Quick wins found</span><span>1,284</span></div></div></div>
+
+<div class="panel split card" id="feat-connect" role="tabpanel"><div><h3>Plays well with the tools you already use</h3><p>ASAP-Rank runs on free-tier friendly building blocks, so you are not locked in. Leads go to the CRM your sales team already uses, and your data stays in places you control.</p><ul><li><b>Zoho CRM and HubSpot:</b> new leads are pushed automatically</li><li><b>Google:</b> Search Console, Analytics 4, Sheets and Tag Manager</li><li><b>Cloudflare:</b> the app and an optional edge connector run on Cloudflare</li><li><b>Supabase and GitHub:</b> background engine, job queue and a static dashboard you can host on GitHub Pages</li><li><b>WordPress:</b> plugin included. Works with any site that accepts a script</li><li><b>WhatsApp, SMS and email:</b> verification codes and drip messages</li></ul></div>
+<div class="viz"><div class="row"><span>New lead: Asha K.</span><span class="badge ok">Sent to HubSpot</span></div><div class="row"><span>New lead: Rohit M.</span><span class="badge ok">Sent to Zoho CRM</span></div><div class="row"><span>Search Console</span><span class="badge ok">Synced today</span></div><div class="row"><span>Static dashboard</span><span class="badge nw">GitHub Pages</span></div></div></div>
+
+<div class="panel split card" id="feat-mcp" role="tabpanel"><div><h3>Ready for AI assistants, today</h3><p>Connect your own AI assistant through MCP to read your style guide, inspect pages, see your review queue and PageSpeed results, and propose changes. Everything it proposes waits for your approval. On the visitor side, WebMCP tools let a visitor's AI agent use your forms and links safely, and an llms.txt file explains your site to AI crawlers.</p><ul><li>MCP server: style guide, page inspection, review queue, link candidates, speed results, propose a change</li><li>WebMCP tool design for your forms and links</li><li>llms.txt and structured data for answer engines</li><li>You stay in control: nothing goes live without approval</li></ul></div>
+<div class="viz"><div class="row"><span>assistant: get_style_guide</span><span class="badge ok">Read</span></div><div class="row"><span>assistant: inspect_page /pricing</span><span class="badge ok">Read</span></div><div class="row"><span>assistant: propose_change FAQ</span><span class="badge nw">Waiting for you</span></div><div class="row"><span>Visitor agent: request_quote</span><span class="badge ok">WebMCP tool</span></div></div></div>
+</div></section>
+
+<section class="use" id="use-cases"><div class="wrap">
+<div class="hd rv"><div class="eyebrow">Made for website owners</div><h2>How it helps in your industry</h2><p>Choose your business to see where the time and leads come back.</p></div>
+<div class="tabs rv" role="tablist" aria-label="Industries" data-group="use">
+<button role="tab" data-id="use-ecom" aria-selected="true">Online stores</button><button role="tab" data-id="use-health" aria-selected="false">Clinics and wellness</button><button role="tab" data-id="use-realestate" aria-selected="false">Real estate</button><button role="tab" data-id="use-edu" aria-selected="false">Education and coaching</button><button role="tab" data-id="use-local" aria-selected="false">Local services</button><button role="tab" data-id="use-agency" aria-selected="false">Agencies</button><button role="tab" data-id="use-saas" aria-selected="false">SaaS and B2B</button><button role="tab" data-id="use-pro" aria-selected="false">Legal and finance</button></div>
+<div class="panel grid g3 on" id="use-ecom" role="tabpanel"><div class="card"><div class="ic">🛒</div><h3>Rank product and category pages</h3><p>Fix titles and descriptions across hundreds of products, add FAQ schema to category pages, and answer shipping and returns questions in search.</p></div><div class="card"><div class="ic">🎁</div><h3>Win back leaving shoppers</h3><p>Exit-intent offers and first-order popups capture an email or WhatsApp number before the visitor is gone.</p></div><div class="card"><div class="ic">💬</div><h3>Answer before they bounce</h3><p>The chatbot replies about delivery, sizes and returns from your own pages, and hands hot buyers to you.</p></div></div>
+<div class="panel grid g3" id="use-health" role="tabpanel" style="display:none"><div class="card"><div class="ic">🩺</div><h3>Show up for local, high-intent searches</h3><p>Improve service pages and add clear question-and-answer content for the symptoms and treatments patients search for.</p></div><div class="card"><div class="ic">📅</div><h3>Turn visits into appointment requests</h3><p>A short popup or chat collects name and phone, verified by OTP if you like, and the lead is in your CRM at once.</p></div><div class="card"><div class="ic">🔁</div><h3>Remind and re-engage</h3><p>Drip messages for check-up reminders and follow-ups, kept to the people who opted in.</p></div></div>
+<div class="panel grid g3" id="use-realestate" role="tabpanel" style="display:none"><div class="card"><div class="ic">🏠</div><h3>Rank each listing and locality</h3><p>Consistent titles, descriptions and schema across listing and area pages, with long-tail ideas from real searches.</p></div><div class="card"><div class="ic">📞</div><h3>Capture buyers while they browse</h3><p>Brochure and site-visit popups with the project or site tagged on every lead.</p></div><div class="card"><div class="ic">🧭</div><h3>Different pitch per site</h3><p>Show one offer on your luxury site and another on your rentals site, then run drips per project.</p></div></div>
+<div class="panel grid g3" id="use-edu" role="tabpanel" style="display:none"><div class="card"><div class="ic">🎓</div><h3>Rank course pages</h3><p>Answer what students ask about fees, eligibility and outcomes in clear FAQ blocks.</p></div><div class="card"><div class="ic">📝</div><h3>Fill webinars and demos</h3><p>Registration popups on the right pages, with every signup flowing to your CRM.</p></div><div class="card"><div class="ic">📚</div><h3>Never run out of topics</h3><p>Content ideas from the exact long searches your learners type.</p></div></div>
+<div class="panel grid g3" id="use-local" role="tabpanel" style="display:none"><div class="card"><div class="ic">🔧</div><h3>Own your area searches</h3><p>Clear service and location pages with FAQ schema help you appear for the questions people ask near them.</p></div><div class="card"><div class="ic">⚡</div><h3>Quote requests, fast</h3><p>A click-to-WhatsApp chatbot that qualifies the job and passes it to you with the details.</p></div><div class="card"><div class="ic">⭐</div><h3>Stay in touch</h3><p>Simple drips for reviews and repeat visits.</p></div></div>
+<div class="panel grid g3" id="use-agency" role="tabpanel" style="display:none"><div class="card"><div class="ic">🏢</div><h3>One dashboard, many client sites</h3><p>Add each client domain, keep leads and tags separate by site, and give clients view-only logins.</p></div><div class="card"><div class="ic">🚀</div><h3>Faster delivery</h3><p>AI drafts the on-page work, your team reviews and publishes in minutes instead of hours.</p></div><div class="card"><div class="ic">🛠</div><h3>Setup assistance</h3><p>Hand over the install to us per domain, then focus on strategy.</p></div></div>
+<div class="panel grid g3" id="use-saas" role="tabpanel" style="display:none"><div class="card"><div class="ic">💻</div><h3>Rank comparison and how-to pages</h3><p>Turn the long-tail searches your buyers use into pages that answer them directly, ready for AI assistants to quote.</p></div><div class="card"><div class="ic">🎯</div><h3>Capture demo requests</h3><p>Popups and chat that route lead details to your team with the page they came from.</p></div><div class="card"><div class="ic">🔌</div><h3>Connect your tools</h3><p>Google Sheets sync and an MCP connection for your AI assistants.</p></div></div>
+<div class="panel grid g3" id="use-pro" role="tabpanel" style="display:none"><div class="card"><div class="ic">⚖️</div><h3>Compliance built into the writing</h3><p>Set banned words and required disclaimers once, and every AI suggestion follows them.</p></div><div class="card"><div class="ic">🔍</div><h3>Answer the questions clients search</h3><p>Plain-language FAQ content that builds trust and earns answer-engine mentions.</p></div><div class="card"><div class="ic">🤝</div><h3>Qualified enquiries only</h3><p>The chatbot collects the basics and hands off, so your time goes to real cases.</p></div></div>
+</div></section>
+
+<section class="how" id="how"><div class="wrap">
+<div class="hd rv"><div class="eyebrow">Live in an afternoon</div><h2>How it works</h2></div>
+<div class="grid g3">
+<div class="card rv"><div class="n">1</div><h3>Paste one snippet</h3><p>Add it with Google Tag Manager or the WordPress plugin. Or ask us to do it for you.</p></div>
+<div class="card rv"><div class="n">2</div><h3>Review the AI suggestions</h3><p>See the before and after for each page, edit anything, approve what you like.</p></div>
+<div class="card rv"><div class="n">3</div><h3>Publish and capture leads</h3><p>Fixes go live, popups and chat start collecting leads, and your CRM fills up.</p></div>
+</div></div></section>
+
+<section class="use" id="stack"><div class="wrap"><div class="hd rv"><div class="eyebrow">Built on tools you can trust</div><h2>Works with your stack</h2><p>Start on free tiers and grow without switching tools. Product names belong to their owners.</p></div>
+<div class="tabs rv" style="gap:10px" aria-label="Works with"><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">Cloudflare</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">Supabase</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">GitHub</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">Google Search Console</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">Google Analytics 4</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">Google Sheets</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">Google Tag Manager</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">WordPress</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">Zoho CRM</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">HubSpot</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">WhatsApp</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">SMS and email</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">MCP and WebMCP</span><span class="card" style="padding:10px 18px;border-radius:999px;font-weight:700;box-shadow:none">llms.txt</span></div></div></section>
+
+<section class="price" id="pricing"><div class="wrap">
+<div class="hd rv"><div class="eyebrow">Simple pricing</div><h2>One price. Everything included.</h2><p>Start free for 7 days. Pay by UPI, bank transfer or PayPal when you are ready.</p></div>
+<div class="grid g3" id="plans">
+<div class="card pc hot rv"><span class="tag">Most popular</span><h3>ASAP-Rank</h3><div class="amt">₹<span data-price="base">2000</span><small> / year</small></div><p>About $<span data-price="baseUsd">20</span> a year</p><ul><li>SEO and AEO suggestions</li><li>Popups, chatbot and CRM</li><li>Drip messages and Sheets sync</li><li>Content ideas from Search Console</li><li>First site included</li></ul><a class="btn p" href="auth.html#signup">Start free trial</a></div>
+<div class="card pc rv"><h3>Extra site</h3><div class="amt">₹<span data-price="siteInr">2000</span><small> / year</small></div><p>About $<span data-price="siteUsd">20</span> a year</p><ul><li>Each extra domain or subdomain</li><li>Show popups and chat on chosen sites</li><li>Leads tagged by site</li></ul><a class="btn o" href="auth.html#signup">Add when you need it</a></div>
+<div class="card pc rv"><h3>Setup assistance</h3><div class="amt">₹<span data-price="setupInr">10000</span><small> / domain, one time</small></div><p>We do the install for you</p><ul><li>Snippet or plugin installed</li><li>Search Console and Analytics connected</li><li>Chatbot and popups set up</li></ul><a class="btn o" href="auth.html#signup">Request after signing up</a></div>
+</div>
+<div class="grid g3" id="more-prices" style="margin-top:20px"></div>
+</div></section>
+
+<section id="faq"><div class="wrap" style="max-width:820px">
+<div class="hd rv"><div class="eyebrow">Questions</div><h2>Frequently asked questions</h2></div>
+<details class="q" id="q-what" open><summary>What is ASAP-Rank?</summary><p>ASAP-Rank is a web app that improves a website's search visibility and lead capture. One snippet lets AI suggest titles, descriptions, schema, FAQs and internal links that you approve and publish, while popups, a chatbot, a CRM and drip messages capture and follow up leads.</p></details>
+<details class="q" id="q-aeo"><summary>What is AEO?</summary><p>AEO means answer engine optimization. It shapes pages so AI assistants and search answers can quote them: clear question-and-answer sections, FAQ schema and direct, factual wording.</p></details>
+<details class="q" id="q-platform"><summary>Does it work on my website platform?</summary><p>Yes. It works on WordPress, Shopify, Wix, Webflow, custom sites and anything that lets you add a script, including through Google Tag Manager. A WordPress plugin is also included.</p></details>
+<details class="q" id="q-domains"><summary>Can I use it on more than one domain?</summary><p>Yes. Your first site is included and each extra domain or subdomain is an add-on. Popups, chatbot and drip messages can be shown on all approved sites or only the ones you choose.</p></details>
+<details class="q" id="q-crm"><summary>Does it connect to Zoho CRM and HubSpot?</summary><p>Yes. New leads from popups and the chatbot can be pushed to Zoho CRM and HubSpot, and the built-in CRM also syncs with Google Sheets.</p></details>
+<details class="q" id="q-mcp"><summary>What are MCP and WebMCP?</summary><p>MCP lets your own AI assistant read your pages and review queue and propose changes for your approval. WebMCP lets a visitor's AI agent use tools you publish for your forms and links.</p></details>
+<details class="q" id="q-speed"><summary>Can it help with page speed?</summary><p>Yes. It tracks PageSpeed scores for each page against a baseline and applies the speed rules you approve, such as image priority, lazy loading and delaying heavy third-party scripts.</p></details>
+<details class="q" id="q-templates"><summary>Are there ready-made popups and chatbot styles?</summary><p>Yes. Choose from 12 popup templates and 8 chatbot styles, recolour them with ready palettes, then edit the words to fit your business.</p></details>
+<details class="q" id="q-cost"><summary>What does it run on?</summary><p>The app runs on Cloudflare with an optional Supabase background engine and a static dashboard on GitHub Pages or your own server, so it can start on free tiers.</p></details>
+<details class="q" id="q-skills"><summary>Do I need technical skills?</summary><p>No. You paste one snippet, approve the changes you like and press publish. Setup assistance is available per domain if you want us to do it for you.</p></details>
+<details class="q" id="q-trial"><summary>Is there a free trial?</summary><p>Yes. Every new account gets a 7-day free trial with no card needed.</p></details>
+</div></section>
+
+<section class="final" id="start"><div class="wrap rv"><h2>Ready to rank higher and capture more leads?</h2><p>Start your 7-day free trial and see your first SEO fixes and lead-capture tools working today.</p><a class="btn p" href="auth.html#signup">Start free trial</a></div></section>
+</main>
+<footer><div class="wrap"><div>© ASAP-Rank. AI SEO, AEO, popups, chatbot and CRM for any website.</div><div><a href="/privacy.html">Privacy policy</a> · <a href="auth.html#login">Log in</a> · <a href="#pricing">Pricing</a> · <a href="#faq">FAQ</a></div></div></footer>
+<script>
+(function(){
+var D=document;
+// Tabs: each click puts the tab id in the address (#feat-crm) so it can be shared; opening such a link selects the tab
+function pick(id,scroll){
+  var p=D.getElementById(id); if(!p)return false;
+  if(p.classList.contains('panel')){
+    var tabs=D.querySelector('.tabs button[data-id="'+id+'"]'); if(!tabs)return false;
+    var bar=tabs.parentNode;
+    [].forEach.call(bar.querySelectorAll('button'),function(b){b.setAttribute('aria-selected',b===tabs?'true':'false')});
+    [].forEach.call(D.querySelectorAll('.panel'),function(x){ if(x.id.slice(0,4)===id.slice(0,4)){x.classList.remove('on');x.style.display='none'} });
+    p.classList.add('on'); p.style.display='';
+    if(scroll)bar.scrollIntoView({behavior:'smooth',block:'center'});
+    return true;
+  }
+  if(p.tagName==='DETAILS'){p.open=true;if(scroll)p.scrollIntoView({behavior:'smooth',block:'center'});return true}
+  if(scroll)p.scrollIntoView({behavior:'smooth',block:'start'}); return true;
+}
+function go(id,push){ if(push&&location.hash!=='#'+id)history.pushState(null,'','#'+id); pick(id,true) }
+[].forEach.call(D.querySelectorAll('.tabs button'),function(b){b.addEventListener('click',function(){go(b.getAttribute('data-id'),true)})});
+[].forEach.call(D.querySelectorAll('details.q'),function(d){d.querySelector('summary').addEventListener('click',function(){ if(!d.open&&d.id&&location.hash!=='#'+d.id)history.replaceState(null,'','#'+d.id) })});
+D.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href^="#"]');if(!a)return;var id=a.getAttribute('href').slice(1);if(id&&D.getElementById(id)){e.preventDefault();go(id,true)}else if(id==='top'){e.preventDefault();history.pushState(null,'','#top');scrollTo({top:0,behavior:'smooth'})}});
+function route(){var h=decodeURIComponent(location.hash.slice(1));if(h)pick(h,!!h)}
+addEventListener('popstate',route);addEventListener('hashchange',route);
+// Tabs in the panels default: first of each group visible
+[].forEach.call(D.querySelectorAll('.panel.on'),function(x){x.style.display=''});
+route();
+// Reveal on scroll
+var els=D.querySelectorAll('.rv');
+if('IntersectionObserver' in window){var io=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting){en.target.classList.add('in');io.unobserve(en.target)}})},{threshold:.12});[].forEach.call(els,function(x){io.observe(x)})}else{[].forEach.call(els,function(x){x.classList.add('in')})}
+// Prices from the owner's Price centre: extra items become cards, and the structured data follows the live price
+window.pricelist=function(p){
+  var box=D.getElementById('more-prices'); if(box&&p&&p.items){
+    box.innerHTML='';
+    p.items.forEach(function(x){var c=D.createElement('div');c.className='card pc';var h=D.createElement('h3');h.textContent=x.name;var a=D.createElement('div');a.className='amt';a.textContent='₹'+x.inr;var s=D.createElement('small');s.textContent=' / '+x.per;a.appendChild(s);c.appendChild(h);c.appendChild(a);if(x.usd){var u=D.createElement('p');u.textContent='About $'+x.usd;c.appendChild(u)}if(x.note){var n=D.createElement('p');n.textContent=x.note;c.appendChild(n)}var l=D.createElement('a');l.className='btn o';l.href='auth.html#signup';l.textContent='Start free trial';c.appendChild(document.createElement('br'));c.appendChild(l);box.appendChild(c)});
+  }
+  try{var ld=D.getElementById('ld-app'),j=JSON.parse(ld.textContent);j.offers.price=String(p.base);ld.textContent=JSON.stringify(j)}catch(e){}
+};
+if(window.PRC&&window.pricefill)window.pricefill();
+})();
+</script>
+<script>
+(function(){
+var D=document;function $(s){return D.getElementById(s)}
+var st=$('dm-stage');if(!st)return;
+var PAL=[['Royal','#5b5bf5','#8b5cf6','#ffffff','#111827'],['Sunset','#f97316','#db2777','#ffffff','#111827'],['Ocean','#0ea5e9','#2563eb','#ffffff','#0f172a'],['Forest','#16a34a','#065f46','#ffffff','#fef3c7'],['Midnight','#0f172a','#1e1b4b','#e8ecff','#5eead4'],['Mint','#14b8a6','#0ea5e9','#ffffff','#0f172a'],['Candy','#f472b6','#a78bfa','#ffffff','#111827'],['Gold','#f59e0b','#b45309','#111827','#111827'],['Rose','#fb7185','#be123c','#ffffff','#fff1f2'],['Clean white','#ffffff','','#111827','#5b5bf5']];
+function lum(h){h=h.replace('#','');var r=parseInt(h.substr(0,2),16)/255,g=parseInt(h.substr(2,2),16)/255,b=parseInt(h.substr(4,2),16)/255;return .2126*r+.7152*g+.0722*b}
+var sw=$('dm-sws');
+PAL.forEach(function(p,i){var b=D.createElement('button');b.type='button';b.className='dm-sw';b.setAttribute('aria-label',p[0]+' colours');b.title=p[0];b.setAttribute('aria-pressed',i===0?'true':'false');b.style.background='linear-gradient(135deg,'+p[1]+','+(p[2]||p[1])+')';b.addEventListener('click',function(){setPal(i)});sw.appendChild(b)});
+function setPal(i){var p=PAL[i];st.style.setProperty('--d1',p[1]);st.style.setProperty('--d2',p[2]||p[1]);st.style.setProperty('--dt',p[3]);st.style.setProperty('--db',p[4]);st.style.setProperty('--dbt',lum(p[4])>.55?'#111827':'#ffffff');st.setAttribute('data-clean',p[0]==='Clean white'?'1':'');[].forEach.call(sw.children,function(b,k){b.setAttribute('aria-pressed',k===i?'true':'false')});note(p[0]+' colours applied to the popup and the chatbot.')}
+[].forEach.call(D.querySelectorAll('[data-r]'),function(b){b.addEventListener('click',function(){st.style.setProperty('--dr',b.getAttribute('data-r')+'px');[].forEach.call(D.querySelectorAll('[data-r]'),function(x){x.setAttribute('aria-pressed',x===b?'true':'false')});note(b.textContent+' corners applied.')})});
+function note(t){$('dm-note').textContent=t}
+
+/* ---------- leads ---------- */
+var leads=[];
+function addLead(name,contact,src){leads.unshift({n:name||'Visitor',c:contact,s:src});leads=leads.slice(0,5);drawLeads()}
+function drawLeads(){var box=$('dm-leads');box.textContent='';$('dm-empty').style.display=leads.length?'none':'';leads.forEach(function(l){var r=D.createElement('div');r.className='dm-lead';var a=D.createElement('div');var n=D.createElement('b');n.textContent=l.n;var s=D.createElement('small');s.textContent=l.c+' · '+l.s;a.appendChild(n);a.appendChild(s);var g=D.createElement('span');g.className='dm-badge';g.textContent='New';r.appendChild(a);r.appendChild(g);box.appendChild(r)})}
+$('dm-reset').addEventListener('click',function(){leads=[];drawLeads();closePop();resetChat();note('Demo reset.')});
+
+/* ---------- popups ---------- */
+var TPL={
+welcome:{n:'welcome offer',h:'Get 10% off your first order',p:'Join our list and we will email your code.',f:[['email','Your email','email']],b:'Send my code'},
+exit:{n:'exit offer',h:'Wait, free delivery today',p:'Leave your email and we will send the offer before you go.',f:[['email','Your email','email']],b:'Claim free delivery'},
+guide:{n:'free guide',h:'Free guide: 7 quick fixes',p:'A short checklist, sent straight to your inbox.',f:[['name','Your name','text'],['email','Your email','email']],b:'Send me the guide'},
+news:{n:'newsletter',h:'One useful email a week',p:'Tips for your home, no spam. Leave any time.',f:[['email','Your email','email']],b:'Subscribe'},
+call:{n:'call-back',h:'Get a call back',p:'Leave your number and we will ring you in minutes.',f:[['name','Your name','text'],['phone','Phone with country code','tel']],b:'Call me back'},
+bar:{n:'sale bar',bar:true,h:'Festive sale: 20% off all repairs today',b:'Book now'}};
+var ov=null,lastFocus=null,timer=null,armed=false;
+function curTpl(){return TPL[$('dm-tpl').value]||TPL.welcome}
+function closePop(){if(ov&&ov.parentNode)ov.parentNode.removeChild(ov);ov=null;if(lastFocus&&lastFocus.focus)try{lastFocus.focus()}catch(e){}}
+function showPop(){
+  closePop();var t=curTpl();lastFocus=D.activeElement;
+  if(t.bar){ov=D.createElement('div');ov.className='dm-sbar';ov.setAttribute('role','region');ov.setAttribute('aria-label','Sale announcement');var sp=D.createElement('span');sp.textContent=t.h;var go=D.createElement('button');go.type='button';go.className='dm-go';go.textContent=t.b;go.addEventListener('click',function(){addLead('Visitor','sale bar click','popup: sale bar');note('On a real site this opens your link and counts the click.')});var x=D.createElement('button');x.type='button';x.className='dm-x';x.setAttribute('aria-label','Close');x.innerHTML='&times;';x.addEventListener('click',closePop);ov.appendChild(sp);ov.appendChild(go);ov.appendChild(x);st.appendChild(ov);return}
+  ov=D.createElement('div');ov.className='dm-ov';
+  var c=D.createElement('div');c.className='dm-card';c.setAttribute('role','dialog');c.setAttribute('aria-modal','true');c.setAttribute('aria-labelledby','dm-ph');
+  var x=D.createElement('button');x.type='button';x.className='dm-x';x.setAttribute('aria-label','Close popup');x.innerHTML='&times;';x.addEventListener('click',closePop);
+  var h=D.createElement('h4');h.id='dm-ph';h.textContent=t.h;var p=D.createElement('p');p.textContent=t.p;
+  c.appendChild(x);c.appendChild(h);c.appendChild(p);
+  var ins={},fm=D.createElement('div');
+  t.f.forEach(function(f){var i=D.createElement('input');i.className='dm-in';i.type=f[2];i.placeholder=f[1];i.setAttribute('aria-label',f[1]);i.autocomplete='off';i.maxLength=80;ins[f[0]]=i;fm.appendChild(i)});
+  var msg=D.createElement('p');msg.className='dm-fine';msg.setAttribute('role','alert');
+  var b=D.createElement('button');b.type='button';b.className='dm-go';b.textContent=t.b;
+  function submit(){
+    var name=(ins.name&&ins.name.value||'').trim(),em=(ins.email&&ins.email.value||'').trim(),ph=(ins.phone&&ins.phone.value||'').replace(/\D/g,'');
+    if(ins.name&&name.length<2){msg.textContent='Please enter your name.';ins.name.focus();return}
+    if(ins.email&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){msg.textContent='Please enter a valid email, such as name@example.com.';ins.email.focus();return}
+    if(ins.phone&&(ph.length<8||ph.length>15)){msg.textContent='Please enter your phone with country code, digits only.';ins.phone.focus();return}
+    addLead(name||'Visitor',em||(ph?'+'+ph:'form'),'popup: '+t.n);
+    c.textContent='';var ok=D.createElement('h4');ok.textContent='Thank you!';var op=D.createElement('p');op.textContent='Demo only: nothing was sent. On a real site this lead lands in your CRM, tagged with this popup.';var cb=D.createElement('button');cb.type='button';cb.className='dm-go';cb.textContent='Close';cb.addEventListener('click',closePop);c.appendChild(ok);c.appendChild(op);c.appendChild(cb);cb.focus()}
+  b.addEventListener('click',submit);
+  fm.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();submit()}});
+  fm.appendChild(b);fm.appendChild(msg);c.appendChild(fm);
+  var fine=D.createElement('p');fine.className='dm-fine';fine.textContent='Demo: nothing you type here is sent or saved.';c.appendChild(fine);
+  ov.appendChild(c);ov.addEventListener('mousedown',function(e){if(e.target===ov)closePop()});st.appendChild(ov);
+  var first=c.querySelector('input');if(first)first.focus();else x.focus();
+}
+D.addEventListener('keydown',function(e){if(e.key==='Escape'){if(ov)closePop();else if(!$('dm-chat').hidden)toggleChat(false)}});
+$('dm-now').addEventListener('click',function(){armed=false;clearTimeout(timer);showPop();note('Popup shown. Close it with the X, Esc or by clicking outside.')});
+$('dm-delay').addEventListener('click',function(){armed=false;closePop();clearTimeout(timer);note('The popup will appear in 3 seconds...');timer=setTimeout(function(){showPop();note('Shown after a 3 second delay.')},3000)});
+$('dm-exit').addEventListener('click',function(){clearTimeout(timer);closePop();armed=true;note('Armed. Now move your mouse up and out of the page below, as if you were leaving. On a phone, use Show popup now.')});
+st.addEventListener('mouseleave',function(e){if(armed&&e.clientY<=st.getBoundingClientRect().top+10){armed=false;showPop();note('Exit intent detected, so the popup appeared.')}});
+$('dm-tpl').addEventListener('change',function(){if(ov)showPop();note(curTpl().n.charAt(0).toUpperCase()+curTpl().n.slice(1)+' selected.')});
+
+/* ---------- chatbot ---------- */
+var log=$('dm-log'),chips=$('dm-chips'),inp=$('dm-in'),flow=null,lead={},greeted=false;
+function pv(k,d){var e=D.querySelector('[data-price="'+k+'"]'),v=e&&e.textContent.trim();var n=Number(String(v||d).replace(/[^0-9.]/g,''));return isFinite(n)&&n>0?n.toLocaleString('en-IN'):String(d)}
+function bubble(role,text){var m=D.createElement('div');m.className='dm-m '+role;m.textContent=text;log.appendChild(m);log.scrollTop=log.scrollHeight;return m}
+function setChips(a){chips.textContent='';(a||[]).forEach(function(t){var b=D.createElement('button');b.type='button';b.className='dm-chip';b.textContent=t;b.addEventListener('click',function(){ask(t)});chips.appendChild(b)})}
+function typing(){var t=D.createElement('div');t.className='dm-ty';t.setAttribute('aria-label','Assistant is typing');t.innerHTML='<i></i><i></i><i></i>';log.appendChild(t);log.scrollTop=log.scrollHeight;return t}
+function reply(text,ch,link){var t=typing();setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t);var m=bubble('b',text);if(link){var a=D.createElement('a');a.href=link[1];a.textContent=link[0];m.appendChild(D.createTextNode('\n'));m.appendChild(a)}setChips(ch)},420+Math.random()*320)}
+var MAIN=['What does it cost?','How do I set it up?','How do you compare to Zoho or HubSpot?','Talk to a person'];
+var KB=[
+[/\b(hi|hello|hey|namaste|good (morning|afternoon|evening))\b/,function(){return['Hello! I am the ASAP-Rank demo assistant. Ask me about pricing, setup, popups, the chatbot, CRM sync or privacy.',MAIN]}],
+[/(\bprice|\bpricing|\bcosts?\b|how much|\bfees?\b|\bcharges?\b|\bplans?\b|rupee|\binr\b|\u20b9|\bpay(ment)?s?\b)/,function(){return['ASAP-Rank is \u20b9'+pv('base',2000)+' a year (about $'+pv('baseUsd',20)+'). That includes your first site, SEO and AEO suggestions, popups, the chatbot, CRM, drip messages and Google Sheets sync. Each extra domain is \u20b9'+pv('siteInr',2000)+' a year. Optional done-for-you setup is \u20b9'+pv('setupInr',10000)+' per domain, one time. You can pay by UPI, bank transfer or PayPal.',['Is there a free trial?','Can I use more than one site?','How do I set it up?']]}],
+[/(\btrial|\bfree\b|demo account|try it|test it|sign ?up|\bcard\b)/,function(){return['Every new account gets a 7-day free trial, no card needed.',['What does it cost?','How do I set it up?'],['Start the free trial','auth.html#signup']]}],
+[/(\bcompar|\bvs\b|versus|jetpack|alternative|tidio|optinmonster|rank math|yoast|better than|competitor)/,function(){return['Different jobs. Zoho CRM and HubSpot are full CRMs for managing a sales team, so ASAP-Rank pushes leads into them rather than replacing them. Jetpack bundles WordPress backups, security and stats and works only on WordPress. ASAP-Rank works on any website and covers on-page SEO and AEO, popups, a chatbot and a light CRM in one flat yearly price, with your data in your own Cloudflare, Supabase and GitHub accounts.',['What does it cost?','Is my data private?']]}],
+[/(set ?up|install|snippet|connect|get started|how do i|integrat|plugin|tag manager|gtm)/,function(){return['You paste one snippet on your site, or add it through Google Tag Manager, or use the included WordPress plugin. No developer needed. If you would rather not, setup assistance is \u20b9'+pv('setupInr',10000)+' per domain, one time.',['Which platforms work?','What does it cost?']]}],
+[/(wordpress|shopify|wix|webflow|platform|squarespace|custom site|cms|website builder)/,function(){return['It works on WordPress, Shopify, Wix, Webflow, custom sites and anything that lets you add a script.',['How do I set it up?','Can I use more than one site?']]}],
+[/(multi|more than one|extra site|another (site|domain)|domains?|subdomain|several sites)/,function(){return['Yes. Your first site is included and each extra domain or subdomain is \u20b9'+pv('siteInr',2000)+' a year. Popups, chat and drips can run on all your sites or only the ones you choose, and leads are tagged by site.',['What does it cost?']]}],
+[/(\bseo\b|\baeo\b|\brank\b|\branking|search engine|\btitles?\b|\bmeta\b|\bschema|\bfaqs?\b)/,function(){return['It checks each page against a 14-point list, then suggests titles, descriptions, schema, FAQs, alt text and internal links in your writing style. AEO means answer engine optimization: clear question and answer blocks so AI assistants can quote you. Nothing goes live until you approve it, and you can revert anything.',['How do I set it up?','What does it cost?']]}],
+[/(popup|pop-up|exit intent|offer|template|palette|colou?r|theme)/,function(){return['There are 12 popup templates and 10 colour palettes. Popups can show on entry, on exit intent, after scrolling or after a delay, on the pages and sites you choose. Try the controls above this chat: change the colours, then press Show popup now.',['Tell me about the chatbot','Where do the leads go?']]}],
+[/(chatbot|chat bot|\bbot\b|whatsapp|handoff|hand over|\botp\b|ai reply)/,function(){return['The chatbot answers from your own pages, FAQs and notes, so it only says what is true for your business. When it cannot help, it hands the chat to you on WhatsApp with the full context. There are 8 ready-made styles, an optional OTP check before sharing details, and a daily AI reply cap to keep costs in check.',['Where do the leads go?','What does it cost?']]}],
+[/(\bcrm\b|\bleads?\b|zoho|hubspot|\bsheets?\b|\bdrips?\b|follow ?up|pipeline)/,function(){return['Every lead lands in the built-in CRM with a status (New to Won), tags, notes and reminders, and the source site and popup. New leads can be pushed to Zoho CRM and HubSpot, and the CRM syncs both ways with Google Sheets. Drip messages can target people by site, popup or chat tag.',['How do you compare to Zoho or HubSpot?','Is my data private?']]}],
+[/(privacy|private|data|secure|security|gdpr|safe|encrypt|own my|control)/,function(){return['Your data stays in places you control: your own Cloudflare account, and optionally your own Supabase and GitHub. AI and messaging keys are stored encrypted. You approve every change before it goes live. This demo sends nothing anywhere.',['How do I set it up?','What does it cost?']]}],
+[/(mcp|assistant|claude|chatgpt|agent|llms\.txt)/,function(){return['MCP lets your own AI assistant read your pages and review queue and propose changes, and everything it proposes waits for your approval. WebMCP lets a visitor\'s AI agent use the tools you publish for forms and links.',['What does it cost?']]}],
+[/(speed|pagespeed|slow|core web|performance|lcp)/,function(){return['It tracks PageSpeed scores per page against a baseline, ranks the quick wins, and a speed booster applies the rules you approve: image priority, lazy loading, preconnects and delayed third-party scripts.',['How do I set it up?']]}],
+[/\b(thanks?|thank you|great|awesome|nice|cool|ok|okay)\b/,function(){return['You are welcome! Anything else you would like to know?',MAIN]}],
+[/(bye|goodbye|see you)/,function(){return['Goodbye! The free trial is here whenever you are ready.',[],['Start the free trial','auth.html#signup']]}]
+];
+var PERSON=/(person|human|agent|someone|call me|callback|call back|talk to|speak to|contact (you|us|sales)|book a|demo call|whatsapp me)/;
+function ask(q){q=String(q||'').trim();if(!q)return;bubble('u',q);inp.value='';setChips([]);
+  if(flow){handleFlow(q);return}
+  var l=q.toLowerCase();
+  if(PERSON.test(l)){flow='name';reply('Happy to arrange that. What is your name? (Type cancel to stop.)',[]);return}
+  for(var i=0;i<KB.length;i++){if(KB[i][0].test(l)){var r=KB[i][1]();reply(r[0],r[1],r[2]);return}}
+  reply('I do not have that in my demo notes. On a real site I answer only from your own pages and hand the chat to you on WhatsApp when I am not sure. Would you like to leave your details for a call back?',['Talk to a person','What does it cost?','How do I set it up?'])}
+function handleFlow(q){var l=q.toLowerCase();
+  if(/^(cancel|stop|no|nevermind|never mind)\b/.test(l)){flow=null;lead={};reply('No problem. What else can I help with?',MAIN);return}
+  if(flow==='name'){if(q.length<2||q.length>60){reply('Please type your name.',[]);return}lead.n=q;flow='phone';reply('Thanks, '+q+'. What is your WhatsApp number with country code, digits only?',[]);return}
+  if(flow==='phone'){var d=q.replace(/\D/g,'');if(d.length<8||d.length>15){reply('That does not look like a full number. Please include the country code, for example 91 then your number.',[]);return}
+    addLead(lead.n,'+'+d,'chat: call back');flow=null;var nm=lead.n;lead={};reply('Thank you, '+nm+'. Demo only: nothing was sent. On a real site this opens a WhatsApp handoff with the whole chat and adds you to the CRM tagged "chat". Check the CRM panel to see the lead.',MAIN)}}
+function resetChat(){log.textContent='';flow=null;lead={};greeted=false;setChips([]);if(!$('dm-chat').hidden)greet()}
+function greet(){if(greeted)return;greeted=true;var t=typing();setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t);bubble('b','Hi! I am the ASAP-Rank demo assistant. Ask me anything, or tap a question below.');setChips(MAIN)},350)}
+function toggleChat(open){var c=$('dm-chat');c.hidden=!open;$('dm-lau').setAttribute('aria-expanded',open?'true':'false');if(open){greet();setTimeout(function(){inp.focus()},50)}else $('dm-lau').focus()}
+$('dm-lau').addEventListener('click',function(){toggleChat($('dm-chat').hidden)});
+$('dm-cx').addEventListener('click',function(){toggleChat(false)});
+$('dm-send').addEventListener('click',function(){ask(inp.value)});
+inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();ask(inp.value)}});
+drawLeads();
+})();
+</script>
+</body></html>

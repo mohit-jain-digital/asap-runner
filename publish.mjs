@@ -38,6 +38,14 @@ export async function main() {
     const u = await fetch(base + 'static_cfg?site=in.(' + done.map(encodeURIComponent).join(',') + ')', { method: 'PATCH', headers: { ...H, prefer: 'return=minimal' }, body: JSON.stringify({ dirty: false }) }); if (!u.ok) throw new Error('Supabase mark ' + u.status);
     if (rows.length < 250) break;
   }
+  // the dashboard, sales page, login and customer setup wizard (folder "site", built by build.py): served free by Pages, so opening the dashboard costs the Worker nothing
+  if (fs.existsSync('site') && APP_URL) {
+    const app = path.join(root, 'app'); fs.rmSync(app, { recursive: true, force: true }); fs.mkdirSync(app, { recursive: true });
+    for (const f of fs.readdirSync('site')) if (f !== 'config.js') fs.copyFileSync(path.join('site', f), path.join(app, f));
+    const sb = process.env.ASAP_SB_URL && process.env.ASAP_SB_ANON ? "\nwindow.ASAP_SB_URL = " + JSON.stringify(process.env.ASAP_SB_URL) + ";\nwindow.ASAP_SB_ANON = " + JSON.stringify(process.env.ASAP_SB_ANON) + ";" : '';
+    fs.writeFileSync(path.join(app, 'config.js'), "window.ASAP_API = " + JSON.stringify(APP_URL.replace(/\/+$/, '')) + ";" + sb + "\n");
+    fs.writeFileSync(path.join(root, 'index.html'), '<!doctype html><meta charset=utf-8><meta http-equiv=refresh content="0;url=app/"><title>ASAP-Rank</title><a href="app/">Open ASAP-Rank</a>');
+  }
   // the loader and chat scripts, so the page-view traffic does not touch the Worker
   if (APP_URL) for (const f of ['rp.js', 'chat.js']) { try { const r = await fetch(APP_URL.replace(/\/+$/, '') + '/__rp/' + f); if (r.ok) fs.writeFileSync(path.join(root, f), await r.text()) } catch (e) { console.error('could not refresh', f) } }
   console.log(JSON.stringify({ published: total }));

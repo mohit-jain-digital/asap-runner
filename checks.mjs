@@ -23,8 +23,10 @@ async function readCapped(res, cap) {
 export async function checklist(env, b) {
   const su = safeUrl(b.url); if (!su) return J({ error: 'Enter a full page address starting with https://' }, 400);
   const u = new URL(su), kw = String(b.keyword || '').trim().toLowerCase().slice(0, 80), AI = ['GPTBot', 'ChatGPT-User', 'OAI-SearchBot', 'ClaudeBot', 'PerplexityBot', 'Google-Extended'];
-  const t0 = Date.now(); let res; try { res = await fetch(su, { redirect: 'follow', headers: { 'user-agent': 'Mozilla/5.0 (compatible; ASAP-RankChecker/1.0)', accept: 'text/html' } }) } catch { return J({ error: 'Could not open that page.' }, 502) }
-  const got = await readCapped(res, 3e6), ms = Date.now() - t0, html = got.text, low = html.toLowerCase(), items = [], add = (id, label, status, detail) => items.push({ id, label, status, detail });
+  const FO = { redirect: 'follow', headers: { 'user-agent': 'Mozilla/5.0 (compatible; ASAP-RankChecker/1.0)', accept: 'text/html' } };
+  const t0 = Date.now(); let res; try { res = await fetch(su, FO) } catch { return J({ error: 'Could not open that page.' }, 502) }
+  let ttfb = Date.now() - t0;
+  const got = await readCapped(res, 3e6); let ms = Date.now() - t0, tries = 1; const html = got.text, low = html.toLowerCase(), items = [], add = (id, label, status, detail) => items.push({ id, label, status, detail });
   let rob = ''; try { const rr = await fetch(u.origin + '/robots.txt', { headers: { 'user-agent': 'ASAP-RankChecker/1.0' } }); if (rr.ok) rob = (await readCapped(rr, 2e5)).text } catch {}
   const path = u.pathname + u.search, gOK = robotsAllows(rob, 'Googlebot', path), blocked = AI.filter(a => !robotsAllows(rob, a, path));
   add('crawl', '1. Crawlability (robots.txt)', !gOK ? 'fail' : blocked.length ? 'warn' : 'pass', !gOK ? 'robots.txt blocks Googlebot from this page.' : blocked.length ? 'Google can crawl it, but robots.txt blocks: ' + blocked.join(', ') + '. Those AI crawlers cannot read this page.' : (rob ? 'robots.txt allows Google and the main AI crawlers.' : 'No robots.txt found, so nothing is blocked.'));
@@ -34,7 +36,12 @@ export async function checklist(env, b) {
   const body = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<noscript[\s\S]*?<\/noscript>/gi, ' '), txt = body.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim(), words = txt ? txt.split(' ').length : 0;
   add('retrieve', '3. Retrievability (text without JavaScript)', words >= 150 ? 'pass' : words >= 40 ? 'warn' : 'fail', words + ' words are in the page HTML before any script runs. ' + (words >= 150 ? 'AI crawlers that do not run JavaScript can read it. To be sure, also ask an AI assistant to summarise this page.' : 'Most AI crawlers do not run JavaScript, so they may see little of this page. Server-render the main content.'));
   const kb = Math.round(got.bytes / 1024);
-  add('tech', '4. Technical health (status, speed, size)', res.status >= 400 ? 'fail' : (ms > 2000 || got.bytes > 2097152) ? 'fail' : (ms > 800 || got.bytes > 1048576) ? 'warn' : 'pass', 'Status ' + res.status + ', loaded in ' + ms + ' ms, HTML ' + kb + ' KB' + (got.cut ? ' (over 3 MB, cut off)' : '') + '. Aim for well under 2 MB.');
+  // The first request pays for DNS, TLS and a cold server cache. When it is slow, time a second request and keep the better one.
+  if (res.status < 400 && ms > 1200) { try { const t1 = Date.now(), r2 = await fetch(su, FO), f2 = Date.now() - t1; await readCapped(r2, 3e6); const m2 = Date.now() - t1; tries = 2; if (m2 < ms) { ms = m2; ttfb = f2 } } catch {} }
+  const sizeBad = got.bytes > 2097152, sizeWarn = got.bytes > 1048576, slowBad = ttfb > 2500 || ms > 5000, slowWarn = ttfb > 1000 || ms > 2500;
+  const why = []; if (sizeBad) why.push('the HTML is over 2 MB, and Google reads only the first 2 MB'); else if (sizeWarn) why.push('the HTML is over 1 MB'); if (slowBad) why.push('the server was very slow to answer'); else if (slowWarn) why.push('the server was slow to answer');
+  add('tech', '4. Technical health (status, speed, size)', res.status >= 400 ? 'fail' : (sizeBad || slowBad) ? 'fail' : (sizeWarn || slowWarn) ? 'warn' : 'pass',
+    'Status ' + res.status + '. First byte after ' + ttfb + ' ms, whole page after ' + ms + ' ms' + (tries > 1 ? ' (best of 2 tries)' : '') + '. HTML size ' + kb + ' KB' + (got.cut ? ' (over 3 MB, cut off)' : '') + (why.length ? '. Flagged because ' + why.join(' and ') : ', which is fine') + '. Speed is measured from our server, so your visitors may see different times. Targets: first byte under 1 s, HTML under 1 MB.');
   const strip = h => h.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
   const h1s = [...html.matchAll(/<h1[\s>][\s\S]*?<\/h1>/gi)].map(m => strip(m[0])), h2s = [...html.matchAll(/<h2[\s>][\s\S]*?<\/h2>/gi)].map(m => strip(m[0])), titles = [...html.matchAll(/<title[\s>][\s\S]*?<\/title>/gi)].map(m => strip(m[0]));
   const probs = []; if (!/^\s*<!doctype html/i.test(html)) probs.push('no <!doctype html>'); if (!/<html[^>]+lang=/i.test(html)) probs.push('no lang on <html>'); if (titles.length != 1) probs.push(titles.length + ' <title> tags'); if (h1s.length != 1) probs.push(h1s.length + ' <h1> headings'); if (!/<meta[^>]+name=["']viewport/i.test(html)) probs.push('no viewport meta'); if (!/<meta[^>]+charset/i.test(html)) probs.push('no charset');
