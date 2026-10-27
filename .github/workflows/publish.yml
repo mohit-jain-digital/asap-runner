@@ -1,6 +1,7 @@
 name: ASAP-Rank publish
 on:
   repository_dispatch: { types: [asap-publish] }   # the app starts this the moment you publish
+  push: { branches: [main], paths: ['site/**', 'publish.mjs'] }
   schedule: [ { cron: "43 */6 * * *" } ]
   workflow_dispatch: {}
 permissions: { contents: write, pages: write, id-token: write }
