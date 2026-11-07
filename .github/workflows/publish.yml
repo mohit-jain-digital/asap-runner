@@ -8,7 +8,9 @@ permissions: { contents: write, pages: write, id-token: write }
 concurrency: { group: asap-publish, cancel-in-progress: false }
 jobs:
   publish:
-    environment: { name: github-pages, url: ${{ steps.dep.outputs.page_url }} }
+    environment:
+      name: github-pages
+      url: ${{ steps.dep.outputs.page_url }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
