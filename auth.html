@@ -1,8 +1,4 @@
-<!doctype html><html lang="en"><head><script src="config.js"></script><script>/* ASAP-Rank page shim. Same file runs on the Worker and on a static host.
-   - ASAP_API (from config.js) = Worker address when this page is served from GitHub Pages or your own server.
-   - Login token is kept in localStorage and sent as a Bearer header (cookies do not cross websites).
-   - If the Worker is down or over its free daily limit, the last good data is shown and saving is paused. */
-(function () {
+<!doctype html><html lang="en"><head><script src="config.js"></script><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2032%2032%22%20width=%2264%22%20height=%2264%22%3E%3Crect%20width=%2232%22%20height=%2232%22%20rx=%229%22%20fill=%22%235b4ff0%22/%3E%3Cpath%20d=%22M8.5%2024.5%2015.5%207l7%2017.5%22%20fill=%22none%22%20stroke=%22%23fff%22%20stroke-width=%222.6%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22/%3E%3Cpath%20d=%22M11.4%2019.2h8.2%22%20stroke=%22%23fff%22%20stroke-width=%222.2%22%20stroke-linecap=%22round%22/%3E%3Cpath%20d=%22M20%206.8h5v5%22%20fill=%22none%22%20stroke=%22%23fde68a%22%20stroke-width=%222.4%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22/%3E%3C/svg%3E"><meta name="theme-color" content="#5b4ff0"><script>(function () {
   var A = String(window.ASAP_API || '').replace(/\/+$/, ''), O = A || location.origin, W = window, F = W.fetch.bind(W);
   W.ASAP_O = O;
   var ls = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v) } catch (e) {} return null };
@@ -31,15 +27,12 @@
       throw err;
     });
   };
-  // Prices: every page shows the owner's current prices (Admin > Price centre). Elements with data-price="base|baseUsd|siteInr|siteUsd|setupInr|setupUsd" are filled in.
   W.PRC = null;
   W.pricefill = function () {
     var p = W.PRC; if (!p) return;
     [].forEach.call(document.querySelectorAll('[data-price]'), function (el) { var v = p[el.getAttribute('data-price')]; if (v != null && v !== '' && v !== 0) el.textContent = String(v) });
     if (W.pricelist) W.pricelist(p);
   };
-  // Prices come from the database: straight from Supabase when ASAP_SB_URL and ASAP_SB_ANON are set (config.js), otherwise through the Worker.
-  // Saved prices show at once, then the page asks again on every load and whenever the tab is opened again.
   function setPrices(p) { if (p && p.base) { W.PRC = p; ls('rp_prices', JSON.stringify({ t: Date.now(), p: p })); W.pricefill() } }
   function fetchPrices() {
     var SB = String(W.ASAP_SB_URL || '').replace(/\/+$/, ''), K = W.ASAP_SB_ANON || '';
@@ -50,14 +43,12 @@
   W.pricerefresh = function () { return fetchPrices().then(setPrices).catch(function () {}) };
   (function () {
     try { var c = JSON.parse(ls('rp_prices') || 'null'); if (c && c.p) W.PRC = c.p } catch (e) {}
-    // Prices are asked for at most once every 10 minutes (every page load and tab switch used to call the Worker).
     function stale() { try { var c = JSON.parse(ls('rp_prices') || 'null'); return !c || !c.t || Date.now() - c.t > 6e5 } catch (e) { return true } }
     function start() { W.pricefill(); if (stale()) W.pricerefresh(); if (W.ASAP_SB_URL) setInterval(function () { if (!document.hidden && stale()) W.pricerefresh() }, 120000) }
     if (document.readyState == 'loading') document.addEventListener('DOMContentLoaded', start); else start();
     document.addEventListener('visibilitychange', function () { if (!document.hidden && stale()) W.pricerefresh() });
   })();
   if (A) {
-    // Worker-only pages: open them on the Worker address, or the static copy of the setup wizard
     document.addEventListener('click', function (e) {
       var a = e.target && e.target.closest && e.target.closest('a[href]'); if (!a) return;
       var h = a.getAttribute('href') || '';
@@ -96,7 +87,7 @@ fieldset{border:1px solid var(--bd);border-radius:16px;margin:0 0 14px;padding:8
 @media(prefers-reduced-motion:reduce){.spin,.bar i{animation:none}}
 .k{animation:in .3s ease both}@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 
-/* v14 brand theme */
+
 :root{--bg:#f6f8fc;--c:#fff;--t:#0f172a;--m:#52607a;--bd:#e3e8f2;--ok:#0f766e}
 @media(prefers-color-scheme:dark){:root{--bg:#0b1020;--c:#121935;--t:#e8ecff;--m:#9fb0dc;--bd:#26305a;--ok:#5eead4}}
 body{background:radial-gradient(900px 340px at 85% -8%,rgba(139,92,246,.20),transparent 60%),radial-gradient(700px 300px at 0% 0%,rgba(20,184,166,.12),transparent 60%),var(--bg);background-attachment:fixed;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -105,7 +96,7 @@ h1{font-weight:800;letter-spacing:-.02em}
 button:not(.l){background:linear-gradient(135deg,#5b5bf5,#8b5cf6);color:#fff;box-shadow:0 8px 22px rgba(91,91,245,.3)}
 input,select{border-radius:14px}button{border-radius:999px}
 :focus-visible{outline-color:#5b5bf5}
-</style></head><body><main><p><a href="index.html">← ASAP-Rank</a></p>
+.lg{vertical-align:middle;flex:none;margin-right:8px}.tw{display:inline-block;overflow:hidden;white-space:nowrap;vertical-align:middle;max-width:0;border-right:.09em solid currentColor;font-family:Georgia,"Times New Roman",serif;font-weight:700;letter-spacing:.01em;animation:rp-type 1.5s steps(9,end) .3s forwards,rp-caret .8s step-end 7 .3s forwards}@keyframes rp-type{to{max-width:7em}}@keyframes rp-caret{0%,49%{border-right-color:currentColor}50%,100%{border-right-color:transparent}}.tw.done{animation:none;max-width:none;border-right:0}@media(prefers-reduced-motion:reduce){.tw{animation:none;max-width:none;border-right:0}}</style></head><body><main><p><a href="index.html" aria-label="ASAP-Rank" style="text-decoration:none;color:inherit">← <svg class="lg" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="9" fill="#5b4ff0"/><path d="M8.5 24.5 15.5 7l7 17.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.4 19.2h8.2" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><path d="M20 6.8h5v5" fill="none" stroke="#fde68a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tw">ASAP-Rank</span></a></p>
 
 <section class=k id=v-signup hidden><form id=fs novalidate><h1 tabindex=-1>Create account</h1>
 <div class=r2><label>First name<input name=first autocomplete=given-name required></label><label>Last name<input name=last autocomplete=family-name required></label></div>
@@ -140,7 +131,6 @@ function go(v){cur=v;document.querySelectorAll('section').forEach(s=>s.hidden=s.
 async function pi(){try{const c=await(await fetch('/api/public')).json();$('#pi').textContent='UPI: '+c.upi+'\nBank transfer: '+c.bank+'\nPayPal: '+c.paypal}catch(e){}}
 async function j(url,body){const r=await fetch(url,{method:'POST',body:JSON.stringify(body)}),x=await r.json().catch(()=>({}));return{ok:r.ok,x}}
 fetch('/api/public').then(r=>r.json()).then(c=>{waMode=c.wa||'soft';if(c.self){$('#cs').hidden=true;if(c.first)go('first')}}).catch(()=>{});
-/* Opens WhatsApp (app on phones, WhatsApp Web on computers) and shows progress while the code is made */
 async function wa(purpose,body,ui){
  let w=null;try{w=window.open('about:blank','_blank');if(w)w.opener=null}catch(e){}
  const b=ui.btn,old=b.textContent;b.disabled=true;b.innerHTML='<span class=spin></span>Preparing your code…';ui.msg.textContent='';ui.step.hidden=false;ui.prog.hidden=false;ui.pt.textContent='Creating a secure one-time code…';

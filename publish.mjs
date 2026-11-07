@@ -19,6 +19,8 @@ export function splitCfg(body) {
 }
 export function writeSite(root, site, body) {
   if (!KEY_OK.test(site)) return false;
+  const bj = typeof body.boostJs == 'string' ? body.boostJs : ''; body = { ...body }; delete body.boostJs;
+  fs.mkdirSync(path.join(root, 'b'), { recursive: true }); fs.writeFileSync(path.join(root, 'b', site + '.js'), bj || ';');
   const dir = path.join(root, 'c'), sd = path.join(dir, site); fs.mkdirSync(dir, { recursive: true });
   fs.rmSync(sd, { recursive: true, force: true });
   const { core, shards } = splitCfg(body); fs.writeFileSync(path.join(dir, site + '.json'), JSON.stringify(core));
@@ -38,14 +40,19 @@ export async function main() {
     const u = await fetch(base + 'static_cfg?site=in.(' + done.map(encodeURIComponent).join(',') + ')', { method: 'PATCH', headers: { ...H, prefer: 'return=minimal' }, body: JSON.stringify({ dirty: false }) }); if (!u.ok) throw new Error('Supabase mark ' + u.status);
     if (rows.length < 250) break;
   }
-  // the dashboard, sales page, login and customer setup wizard (folder "site", built by build.py): served free by Pages, so opening the dashboard costs the Worker nothing
-  if (fs.existsSync('site') && APP_URL) {
+  // the dashboard, sales page, login and customer setup wizard: served free by Pages, so opening the dashboard costs the Worker nothing.
+  // The pages live in the folder "site", or directly in the repository root if they were uploaded there.
+  const PAGES = ['404.html', 'app.html', 'auth.html', 'customer-setup.html', 'index.html'];
+  const pagesDir = fs.existsSync('site') ? 'site' : fs.existsSync('app.html') ? '.' : '';
+  const note = t => fs.writeFileSync(path.join(root, 'index.html'), '<!doctype html><meta charset=utf-8><title>ASAP-Rank files</title><body style="font-family:system-ui;max-width:560px;margin:40px auto;padding:0 16px"><h2>ASAP-Rank files are published</h2><p>' + t + '</p>');
+  if (APP_URL && pagesDir) {
     const app = path.join(root, 'app'); fs.rmSync(app, { recursive: true, force: true }); fs.mkdirSync(app, { recursive: true });
-    for (const f of fs.readdirSync('site')) if (f !== 'config.js') fs.copyFileSync(path.join('site', f), path.join(app, f));
+    for (const f of pagesDir === 'site' ? fs.readdirSync('site') : PAGES.filter(x => fs.existsSync(x))) if (f !== 'config.js') fs.copyFileSync(path.join(pagesDir, f), path.join(app, f));
     const sb = process.env.ASAP_SB_URL && process.env.ASAP_SB_ANON ? "\nwindow.ASAP_SB_URL = " + JSON.stringify(process.env.ASAP_SB_URL) + ";\nwindow.ASAP_SB_ANON = " + JSON.stringify(process.env.ASAP_SB_ANON) + ";" : '';
     fs.writeFileSync(path.join(app, 'config.js'), "window.ASAP_API = " + JSON.stringify(APP_URL.replace(/\/+$/, '')) + ";" + sb + "\n");
     fs.writeFileSync(path.join(root, 'index.html'), '<!doctype html><meta charset=utf-8><meta http-equiv=refresh content="0;url=app/"><title>ASAP-Rank</title><a href="app/">Open ASAP-Rank</a>');
-  }
+  } else if (!APP_URL) note('The APP_URL secret is missing in this repository (Settings, Secrets and variables, Actions), so the dashboard pages were not added. Add it, then run the publish workflow again.');
+  else note('The dashboard pages were not found. Put the folder "site" (or app.html, auth.html, index.html, 404.html and customer-setup.html) in the repository root, then run the publish workflow again.');
   // the loader and chat scripts, so the page-view traffic does not touch the Worker
   if (APP_URL) for (const f of ['rp.js', 'chat.js']) { try { const r = await fetch(APP_URL.replace(/\/+$/, '') + '/__rp/' + f); if (r.ok) fs.writeFileSync(path.join(root, f), await r.text()) } catch (e) { console.error('could not refresh', f) } }
   console.log(JSON.stringify({ published: total }));
