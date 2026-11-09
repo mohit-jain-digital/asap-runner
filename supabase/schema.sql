@@ -136,6 +136,9 @@ begin
     avg_perf=excluded.avg_perf, fail=excluded.fail, warn=excluded.warn;
   get diagnostics k = row_count;
   delete from snap where day < current_date - 400;
+  -- keep the free 500 MB small: finished background jobs after 30 days, daily event counts after 400 days
+  begin delete from jobs where status in ('done','error','cancelled') and updated < now() - interval '30 days'; exception when others then null; end;
+  begin delete from ev_site where day < current_date - 400; exception when others then null; end;
   return k;
 end $$;
 
@@ -171,6 +174,31 @@ create policy "public can read prices" on site_cfg for select to anon using (k =
 create or replace function usage_stats() returns jsonb language sql stable as $$
   select jsonb_build_object('db_bytes', pg_database_size(current_database()), 'urls', (select count(*) from urls), 'kb', (select count(*) from kb)) $$;
 
+-- Visit events sent straight from the visitor's browser (no Worker request). Only counts are stored.
+create table if not exists ev_site(site text not null, day date not null, ev text not null, ref text not null default '', n int not null default 0, primary key(site, day, ev, ref));
+alter table ev_site enable row level security;
+create or replace function ev_add(p_site text, p_rows jsonb) returns void language plpgsql security definer set search_path = public as $$
+declare r jsonb; e text; f text; c int; k int := 0;
+begin
+  if p_site is null or p_site !~ '^[A-Za-z0-9_-]{3,60}$' or not exists (select 1 from static_cfg where site = p_site) then return; end if;
+  if p_rows is null or jsonb_typeof(p_rows) <> 'array' then return; end if;
+  for r in select value from jsonb_array_elements(p_rows) loop
+    k := k + 1; exit when k > 12;
+    e := r->>'e'; continue when e is null or e not in ('popup_view','popup_close','popup_lead','chat_open','chat_message','chat_lead');
+    f := left(regexp_replace(coalesce(r->>'r',''), '[^A-Za-z0-9 .:_-]', '', 'g'), 60);
+    begin c := least(greatest(coalesce((r->>'n')::int, 1), 1), 30); exception when others then c := 1; end;
+    insert into ev_site(site, day, ev, ref, n) values (p_site, (now() at time zone 'utc')::date, e, f, c) on conflict (site, day, ev, ref) do update set n = ev_site.n + excluded.n;
+  end loop;
+end $$;
+create or replace function ev_get(p_site text, p_since date) returns table(day date, ev text, ref text, n int) language sql stable as $$
+  select day, ev, ref, n from ev_site where site = p_site and day >= p_since order by day $$;
+
+-- A few text blocks for each of several pages: used to write FAQs from your pages.
+create or replace function kb_chunks(p_uid text, p_urls text[], p_per int default 6) returns table(url text, title text, chunk text) language sql stable as $$
+  select url, title, chunk from (select url, title, chunk, row_number() over (partition by url order by id) rn from kb where uid = p_uid and url = any(p_urls)) x where rn <= p_per $$;
+
 -- Hardening: only your Cloudflare app and your GitHub runner (service key) may call these functions.
 -- The public (anon) key can still read the price row above and nothing else.
 revoke execute on all functions in schema public from public, anon, authenticated;
+-- The only function the public (anon) key may call: it adds visit counts for a site that exists.
+grant execute on function ev_add(text, jsonb) to anon;
