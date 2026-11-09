@@ -15,6 +15,21 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+      - name: Check that GitHub Pages is turned on
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if bt=$(gh api "repos/${{ github.repository }}/pages" --jq .build_type 2>&1); then
+            if [ "$bt" != "workflow" ]; then
+              echo "::error title=Change the Pages source::In this repository open Settings, then Pages, and under Source choose GitHub Actions. Then open the Actions tab, choose ASAP-Rank publish and press Run workflow."
+              exit 1
+            fi
+          elif echo "$bt" | grep -qi "not found"; then
+            echo "::error title=Turn on GitHub Pages first::In this repository open Settings, then Pages, and under Source choose GitHub Actions. Then open the Actions tab, choose ASAP-Rank publish and press Run workflow. (Pages needs a public repository on a free GitHub plan.)"
+            exit 1
+          else
+            echo "::warning::Could not check the Pages setting ($bt). Carrying on."
+          fi
       - uses: actions/setup-node@v5
         with: { node-version: 22 }
       - run: node publish.mjs
@@ -24,7 +39,7 @@ jobs:
           APP_URL: ${{ secrets.APP_URL }}
       - name: Save the files
         run: |
-          git config user.name "asap-rank-bot"; git config user.email "bot@users.noreply.github.com"
+          git config user.name "${{ github.actor }}"; git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
           git add docs
           if git diff --cached --quiet; then echo "nothing new"; else git commit -m "publish $(date -u +%FT%TZ)"; git pull --rebase -q || true; git push; fi
       - uses: actions/configure-pages@v5
