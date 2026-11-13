@@ -117,7 +117,7 @@ async function cloudflare(tok, code, vars, plain) {
   await call(CF, tok, 'PUT', `${W}/workers/scripts/${name}/schedules`, [{ cron: '*/15 * * * *' }]);
   return { appUrl, account: a.name || id };
 }
-const SECRET_NAMES = new Set(['SECRET', 'LICENSE_KEY', 'SUPABASE_KEY', 'GH_TOKEN', 'BREVO_KEY', 'GEMINI_KEY', 'PSI_KEY', 'WA_VERIFY_TOKEN', 'WA_APP_SECRET', 'REPORT_SECRET', 'CF_API_TOKEN']);
+const SECRET_NAMES = new Set(['SECRET', 'LICENSE_KEY', 'SUPABASE_KEY', 'GH_TOKEN', 'BREVO_KEY', 'GEMINI_KEY', 'PSI_KEY', 'WA_VERIFY_TOKEN', 'WA_APP_SECRET', 'REPORT_SECRET', 'CF_API_TOKEN', 'SETUP_CODE']);
 
 /* ---------- the run ---------- */
 async function main() {
@@ -144,7 +144,7 @@ async function main() {
     v.BREVO_KEY = await get('BREVO_KEY', 'Brevo API key (email sending)', { optional: 1, keep: 1 });
     v.PSI_KEY = await get('PSI_KEY', 'Google PageSpeed key', { optional: 1, keep: 1 });
   }
-  ST.v = { ...ST.v, ...v }; ST.secret ||= rnd(24); ST.watok ||= rnd(16); save();
+  ST.v = { ...ST.v, ...v }; ST.secret ||= rnd(24); ST.setup ||= rnd(16); ST.watok ||= rnd(16); save();
   const runnerName = A['runner-name'] || 'asap-runner', appName = 'asap-rank-app', runnerFull = `${me}/${runnerName}`;
 
   STEP(1, 'GitHub: the runner repository (public, free unlimited minutes and free Pages)');
@@ -169,8 +169,8 @@ async function main() {
   const pagesBase = `https://${me.toLowerCase()}.github.io/${runnerName}`;
   const vars = { SECRET: ST.secret, SUPABASE_URL: sb.url, SUPABASE_KEY: sb.service, GH_REPO: runnerFull, GH_TOKEN: A['app-token'] || process.env.GH_APP_TOKEN || ghT, STATIC_BASE: pagesBase, ...(sb.anon ? { SUPABASE_ANON: sb.anon } : {}) };
   const plain = { GEMINI_MODEL: 'gemini-2.5-flash' };
-  if (admin) Object.assign(vars, { ADMIN_EMAIL: v.ADMIN_EMAIL, TEMPLATE_REPO: tmpl, DASH_ORIGIN: `https://${me.toLowerCase()}.github.io`, WA_VERIFY_TOKEN: ST.watok });
-  else Object.assign(vars, { LICENSE_KEY: v.LICENSE_KEY }), plain.HUB_URL = await get('HUB_URL', 'Your ASAP-Rank address (the website you signed up on, like https://app.example.com)', { def: A.hub || hubDef, keep: 1 });
+  if (admin) Object.assign(vars, { ADMIN_EMAIL: v.ADMIN_EMAIL, OWN_STACK: A.hosted ? '0' : '1', TEMPLATE_REPO: tmpl, DASH_ORIGIN: `https://${me.toLowerCase()}.github.io`, WA_VERIFY_TOKEN: ST.watok });
+  else Object.assign(vars, { LICENSE_KEY: v.LICENSE_KEY, SETUP_CODE: ST.setup, DASH_ORIGIN: `https://${me.toLowerCase()}.github.io` }), plain.HUB_URL = await get('HUB_URL', 'Your ASAP-Rank address (the website you signed up on, like https://app.example.com)', { def: A.hub || hubDef, keep: 1 });
   for (const k of ['GEMINI_KEY', 'BREVO_KEY', 'PSI_KEY', 'MAIL_FROM']) if (v[k]) vars[k] = v[k];
   if (!admin && !plain.HUB_URL) throw new Error('Missing --hub=ADDRESS (the ASAP-Rank address your account is on).');
   const cf = await cloudflare(cfT, code, vars, plain);
@@ -184,7 +184,7 @@ async function main() {
   ST.done = { appUrl: cf.appUrl, runner: runnerFull }; save();
 
   say('\n==================== DONE ====================');
-  say(`Your app:        ${cf.appUrl}   ${ping == 200 ? '(answers)' : '(not answering yet: wait a minute and open it)'}`);
+  say(`Your app engine: ${cf.appUrl}   ${ping == 200 ? '(answers)' : '(not answering yet: wait a minute and open it)'}`);
   say(`Your dashboard:  ${pagesBase}/app/   (ready in about 5 minutes: GitHub is publishing it${started ? '' : '. Press Run workflow on the ASAP-Rank publish action by hand'})`);
   say(`Runner repo:     https://github.com/${runnerFull}`);
   if (admin) say(`Customer copy:   https://github.com/${tmpl}   Deploy button: https://deploy.workers.cloudflare.com/?url=https://github.com/${tmpl}`);
@@ -192,7 +192,7 @@ async function main() {
   if (admin) { say(` 1. Open ${cf.appUrl} and sign up with ${v.ADMIN_EMAIL}. Then More, Admin, Default styling, Republish all.`);
     if (!v.BREVO_KEY) say(' 2. Emails: add a Brevo key and rerun this installer (it reuses everything).'); if (!v.GEMINI_KEY) say(' 3. AI: add a Gemini key and rerun this installer.');
     say(` 4. Optional WhatsApp sign-up check: guide Step 5.   Send customers: ${cf.appUrl}/customer-setup`) }
-  else { say(` 1. Open ${cf.appUrl} and create your admin login (same email you used for your ASAP-Rank account).`); say(' 2. Add your pages and the snippet: guide Step 7.') }
+  else { say(` 1. Open ${pagesBase}/app/ (wait about 5 minutes the first time) and create your admin login (same email you used for your ASAP-Rank account). It asks for a setup code. Yours is:  ${ST.setup}`); say(`    Your app address ${cf.appUrl} now only runs things in the background. Your dashboard is the address above.`); say(' 2. Add your pages and the snippet: guide Step 7.') }
   if (vars.GH_TOKEN === ghT && !A['app-token'] && !process.env.GH_APP_TOKEN) say('\nSecurity tip: the app is using your setup GitHub token. For least access, make a fine-grained token (only the runner repository, Contents: Read and write) and run:  node install.mjs ' + MODE + ' --app-token=THAT_TOKEN');
   say('You can delete the three setup tokens now if you like. To update later: run this installer again.');
 }

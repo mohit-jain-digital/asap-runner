@@ -4,8 +4,9 @@
 import zlib from 'node:zlib';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { checklist, safeUrl, norm } from './checks.mjs';
+import { checklist, safeUrl, safeFetch, norm } from './checks.mjs';
 
+export const SB_REV = 1;
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
 const UA = 'Mozilla/5.0 (compatible; ASAP-RankChecker/1.0)';
 
@@ -13,6 +14,7 @@ export function supabaseStore(url, key) {
   const base = String(url).replace(/\/+$/, '') + '/rest/v1/', H = { apikey: key, authorization: 'Bearer ' + key, 'content-type': 'application/json' };
   const call = async (path, o = {}) => { const r = await fetch(base + path, { ...o, headers: { ...H, ...(o.headers || {}) } }); if (!r.ok) throw new Error('Supabase ' + r.status + ' ' + (await r.text()).slice(0, 200)); const t = await r.text(); return t ? JSON.parse(t) : null };
   return {
+    schemaRev: async () => { try { const r = await fetch(base + 'schema_meta?select=v&k=eq.rev', { headers: H }); if (!r.ok) return 0; const j = await r.json(); return j && j[0] ? +j[0].v || 0 : 0 } catch (e) { return null } },
     claimJob: async () => ((await call('rpc/claim_job', { method: 'POST', body: '{}' })) || [])[0] || null,
     snap: async () => { try { await call('rpc/take_snaps', { method: 'POST', body: '{}' }) } catch (e) { console.log('::warning::Could not save the daily progress snapshot. Run the latest schema.sql in Supabase. ' + e.message) } },
     claimAi: async n => (await call('rpc/claim_ai', { method: 'POST', body: JSON.stringify({ n }) })) || [],
@@ -32,7 +34,7 @@ export function supabaseStore(url, key) {
 
 const decodeXml = s => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
 async function getXml(u) {
-  const r = await fetch(u, { headers: { 'user-agent': UA, accept: 'application/xml,text/xml,*/*' }, redirect: 'follow', signal: AbortSignal.timeout(40000) });
+  const r = await safeFetch(u, { headers: { 'user-agent': UA, accept: 'application/xml,text/xml,*/*' }, signal: AbortSignal.timeout(40000) }, true);
   if (!r.ok) throw new Error('HTTP ' + r.status);
   let b = Buffer.from(await r.arrayBuffer()); if (b.length > 80e6) throw new Error('too large');
   if (b[0] == 0x1f && b[1] == 0x8b) b = zlib.gunzipSync(b);
@@ -85,7 +87,7 @@ export async function runKb(store, job, { budgetMs = 600000, conc = 4, delayMs =
   const one = async url => {
     try {
       const u = safeUrl(url); if (!u) { skipped++; return }
-      const r = await fetch(u, { headers: { 'user-agent': UA, accept: 'text/html' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+      const r = await safeFetch(u, { headers: { 'user-agent': UA, accept: 'text/html' }, signal: AbortSignal.timeout(20000) });
       if (!r.ok || !/html/i.test(r.headers.get('content-type') || '')) { skipped++; return }
       const b = Buffer.from(await r.arrayBuffer()); if (b.length > 2e6) { skipped++; return }
       const { title, chunks } = pageText(b.toString('utf8')); if (!chunks.length) { skipped++; return }
@@ -157,6 +159,7 @@ export async function runInspect(store, { budgetMs = 1500000, conc = 5, batch = 
 export async function main() {
   const { SUPABASE_URL, SUPABASE_SERVICE_KEY } = process.env; if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) { console.error('Set SUPABASE_URL and SUPABASE_SERVICE_KEY.'); process.exit(1) }
   const store = supabaseStore(SUPABASE_URL, SUPABASE_SERVICE_KEY), T0 = Date.now(), total = (+process.env.RUN_MINUTES || 30) * 6e4; let imported = 0, inspected = 0;
+  if (store.schemaRev) { const have = await store.schemaRev(); if (have !== null && have < SB_REV) console.log('::warning::Your Supabase tables are older than this runner expects (version ' + have + ', needs ' + SB_REV + '). Open the Supabase SQL editor and run supabase/schema.sql again. It is safe to run again.') }
   for (let k = 0; k < 20 && Date.now() - T0 < total * 0.4; k++) {
     const job = await store.claimJob(); if (!job) break;
     try { if (job.kind == 'kb') await runKb(store, job, { budgetMs: Math.max(60000, total * 0.4 - (Date.now() - T0)) }); else await runImport(store, job, { budgetMs: Math.max(60000, total * 0.4 - (Date.now() - T0)), cap: +process.env.Q_CAP || 60000, gcap: +process.env.G_CAP || 120000 }); imported++ } catch (e) { await store.updateJob(job.id, { status: 'error', err: String(e.message || e).slice(0, 300) }) }
