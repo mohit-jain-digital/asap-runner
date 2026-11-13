@@ -197,6 +197,12 @@ create or replace function ev_get(p_site text, p_since date) returns table(day d
 create or replace function kb_chunks(p_uid text, p_urls text[], p_per int default 6) returns table(url text, title text, chunk text) language sql stable as $$
   select url, title, chunk from (select url, title, chunk, row_number() over (partition by url order by id) rn from kb where uid = p_uid and url = any(p_urls)) x where rn <= p_per $$;
 
+-- Schema version. The app and the runner read this row and warn when your tables are older than they expect.
+-- After updating ASAP-Rank, run this whole file again in the SQL editor (it is safe to run more than once).
+create table if not exists schema_meta(k text primary key, v int not null);
+alter table schema_meta enable row level security;
+insert into schema_meta(k, v) values ('rev', 1) on conflict (k) do update set v = excluded.v;
+
 -- Hardening: only your Cloudflare app and your GitHub runner (service key) may call these functions.
 -- The public (anon) key can still read the price row above and nothing else.
 revoke execute on all functions in schema public from public, anon, authenticated;
