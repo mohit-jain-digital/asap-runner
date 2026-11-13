@@ -89,6 +89,10 @@ nav.links{margin-left:auto;display:flex;gap:4px;align-items:center}
 nav.links a{color:#cbd5f5;text-decoration:none;padding:8px 12px;border-radius:10px;font-size:.95rem}
 nav.links a:hover{background:rgba(255,255,255,.08);color:#fff}
 nav.links .btn{min-height:40px;padding:0 18px;margin-left:6px}
+nav.links a,nav.links .btn{white-space:nowrap}header.nav .wrap{flex-wrap:nowrap}
+html{text-rendering:optimizeLegibility;-webkit-text-size-adjust:100%}body{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+@media(max-width:1240px){nav.links a:nth-child(3),nav.links a:nth-child(6),nav.links a:nth-child(8){display:none}}
+@media(max-width:1020px){nav.links a:nth-child(4),nav.links a:nth-child(5){display:none}}
 @media(max-width:860px){nav.links a:not(.btn){display:none}}
 .hero{background:radial-gradient(1200px 500px at 70% -10%,rgba(139,92,246,.35),transparent 60%),radial-gradient(900px 500px at 0% 20%,rgba(20,184,166,.25),transparent 60%),var(--bg);color:#fff;padding:72px 0 96px;overflow:hidden}
 .hero .wrap{display:grid;grid-template-columns:1.05fr .95fr;gap:40px;align-items:center}

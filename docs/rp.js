@@ -1,7 +1,7 @@
 var __name=function(f){return f};(function loader() {
   const d = document, s = d.currentScript || d.querySelector('script[src*="/__rp/rp.js"]'); if (!s) return;
   if (window.__rpOn) return; window.__rpOn = 1;
-  const sq = new URL(s.src), AP = (s.getAttribute('data-api') || '').replace(/\/+$/, ''), STAT = !!AP && AP !== sq.origin, o = (STAT ? AP : sq.origin) + '/__rp/', site = sq.searchParams.get('site') || s.getAttribute('data-site') || '', L = location, P = L.pathname + L.search, DBG = /rp_debug/.test(L.search);
+  const sq = new URL(s.src), AP = (s.getAttribute('data-api') || '').replace(/\/+$/, ''), STAT = !/\/__rp\/rp\.js$/.test(sq.pathname) || (!!AP && AP !== sq.origin), SB0 = new URL('./', sq.href).href.replace(/\/+$/, ''), o = (STAT ? (AP || sq.origin) : sq.origin) + '/__rp/', site = sq.searchParams.get('site') || s.getAttribute('data-site') || '', L = location, P = L.pathname + L.search, DBG = /rp_debug/.test(L.search);
   const np = x => x.length > 1 ? x.replace(/\/+$/, '') : x;
   const ls = (k, v) => { try { return v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v) } catch (e) {} };
   const esc = x => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
@@ -188,20 +188,20 @@ var __name=function(f){return f};(function loader() {
   const ga = c => { const id = String(c.ga4 || ''); if (!/^G-[A-Z0-9]{6,12}$/.test(id)) return; setTimeout(() => { const w = window, present = [...d.scripts].some(z => /googletagmanager\.com\/gtag\/js\?id=G-/i.test(z.src || '')) || Object.keys(w.google_tag_manager || {}).some(k => /^G-/.test(k)) || (w.dataLayer || []).some(e2 => e2 && e2[0] == 'config' && /^G-/.test(e2[1] || '')); if (present) { if (DBG) console.info('[ASAP-Rank] GA4 already on this page, not adding it again'); return } w.dataLayer = w.dataLayer || []; w.gtag = w.gtag || function () { w.dataLayer.push(arguments) }; w.gtag('js', new Date()); w.gtag('config', id); const gs = d.createElement('script'); gs.async = true; gs.src = 'https://www.googletagmanager.com/gtag/js?id=' + id; d.head.appendChild(gs); if (DBG) console.info('[ASAP-Rank] GA4 added: ' + id) }, 3000) };
   const chatLoad = c => {
     const k = c.chat; if (!k || !k.on) return; if (k.inc && k.inc.length && !hit(k.inc)) return; if (k.exc && k.exc.length && hit(k.exc)) return;
-    const go = () => { if (window.__rpChat) return; window.__rpChat = Object.assign({ o, site }, k); const x = d.createElement('script'); x.async = true; x.src = (STAT ? sq.origin + '/chat.js' : o + 'chat.js'); d.head.appendChild(x) };
+    const go = () => { if (window.__rpChat) return; window.__rpChat = Object.assign({ o, site }, k); const x = d.createElement('script'); x.async = true; x.src = (STAT ? SB0 + '/chat.js' : o + 'chat.js'); d.head.appendChild(x) };
     ['pointerdown', 'keydown', 'touchstart', 'scroll'].forEach(e => addEventListener(e, go, { once: true, passive: true })); setTimeout(go, 5000);
   };
   const pmx = (pat, path) => String(pat || '').split(/[\n,]/).some(l => { l = l.trim(); if (!l) return false; if (l.startsWith('re:')) { try { return new RegExp(l.slice(3)).test(path) } catch (e) { return false } } return new RegExp('^' + np(l).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$').test(np(path)) });
   const fixc = c => { if (c.big) return fetch(o + 'cfg.json?site=' + site + '&h=' + encodeURIComponent(L.hostname) + '&path=' + encodeURIComponent(L.pathname)).then(r => r.json()).then(c2 => { c.changes = c2.changes || []; return c }).catch(() => c); c.allCh = c.changes || []; c.changes = c.allCh.filter(z => pmx(z.page, L.pathname) && (!z.h || hn(z.h) == hn(L.hostname))); return c };
   const hn = x => String(x || '').toLowerCase().replace(/^www\./, ''), png = () => { try { const t = +ls('rp_pt') || 0; if (Date.now() - t > 864e5) { ls('rp_pt', Date.now()); navigator.sendBeacon(o + 'ping?site=' + site + '&h=' + encodeURIComponent(L.hostname) + '&k=snippet') } } catch (e) {} };
   const bkt = p => { let h = 2166136261; for (let i = 0; i < p.length; i++) { h ^= p.charCodeAt(i); h = Math.imul(h, 16777619) } return (h >>> 0) % 64 };
-  const statCfg = () => fetch(sq.origin + '/c/' + site + '.json').then(r => r.json()).then(async c => {
+  const statCfg = () => fetch(SB0 + '/c/' + site + '.json').then(r => r.json()).then(async c => {
     const H = hn(L.hostname), none = { popups: [], changes: [] }; png();
     if (c.off || (c.until && Date.now() > c.until)) return none;
     if (c.hosts && !c.self && c.hosts.length && !c.hosts.includes(H)) return none;
     c.popups = (c.popups || []).filter(z => !(z.sites || []).length || z.sites.map(hn).includes(H));
     if (c.chat && (c.chat.sites || []).length && !c.chat.sites.map(hn).includes(H)) c.chat = null;
-    if (c.sh) { const ch = []; for (const b of [bkt(np(L.pathname)), 'w']) { try { const j = await fetch(sq.origin + '/c/' + site + '/' + b + '.json').then(r => r.json()); ch.push(...(j.changes || [])) } catch (e) {} } c.changes = ch }
+    if (c.sh) { const ch = []; for (const b of [bkt(np(L.pathname)), 'w']) { try { const j = await fetch(SB0 + '/c/' + site + '/' + b + '.json').then(r => r.json()); ch.push(...(j.changes || [])) } catch (e) {} } c.changes = ch }
     return c }).catch(() => ({ popups: [], changes: [] }));
   const spa = c => {
     if (edge) return;
