@@ -1,0 +1,38 @@
+name: ASAP-Rank clean history
+# One-time tool for a PUBLIC repository. It replaces the whole history with ONE fresh commit,
+# so files that were once published (for example customer domains) can no longer be read in old commits.
+# Needs a repository secret HISTORY_TOKEN: a fine-grained token for THIS repository only, with
+# Contents: Read and write, and Workflows: Read and write. Run it by hand: Actions, ASAP-Rank clean history, Run workflow, type CLEAN.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm: { description: "Type CLEAN to confirm (this cannot be undone)", required: true }
+      delete_tags: { description: "Also delete all release tags (type YES). Make a new release afterwards.", required: false, default: "NO" }
+permissions: { contents: read }
+jobs:
+  clean:
+    if: ${{ github.event.inputs.confirm == 'CLEAN' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the token
+        env: { T: "${{ secrets.HISTORY_TOKEN }}" }
+        run: |
+          if [ -z "$T" ]; then echo "::error::The secret HISTORY_TOKEN is missing. Create it first (see the wizard card Clean the history)."; exit 1; fi
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 1, token: "${{ secrets.HISTORY_TOKEN }}", persist-credentials: true }
+      - name: Replace the history with one commit
+        run: |
+          set -euo pipefail
+          BR="$(git rev-parse --abbrev-ref HEAD)"
+          git config user.name "asap-rank-clean"; git config user.email "clean@users.noreply.github.com"
+          git checkout --orphan asap-clean-tmp
+          git add -A
+          git commit -q -m "Fresh start: old history removed"
+          git push --force origin "asap-clean-tmp:${BR}"
+          echo "History of ${BR} replaced by one commit."
+      - name: Delete release tags (optional)
+        if: ${{ github.event.inputs.delete_tags == 'YES' }}
+        run: |
+          set -euo pipefail
+          for t in $(git ls-remote --tags origin | awk '{print $2}' | grep -v '\^{}' | sed 's#refs/tags/##'); do git push origin --delete "$t" || true; done
+          echo "Release tags deleted. Create a new tag and run release.mjs again."

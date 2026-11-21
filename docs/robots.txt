@@ -1,0 +1,10 @@
+# ASAP-Rank public pages are open to search engines and AI answer engines.
+# Login and the dashboard are private.
+User-agent: *
+Allow: /
+Disallow: /app.html
+Disallow: /app/
+Disallow: /auth.html
+Disallow: /customer-setup.html
+
+Sitemap: https://asap-rank.artistryc.in/sitemap.xml

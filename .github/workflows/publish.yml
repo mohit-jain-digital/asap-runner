@@ -1,0 +1,79 @@
+name: ASAP-Rank publish
+on:
+  repository_dispatch: { types: [asap-publish, asap-sync] }   # the app starts this the moment you publish
+  push: { branches: [main], paths: ['site/**', 'publish.mjs'] }
+  schedule: [ { cron: "43 */6 * * *" } ]
+  workflow_dispatch: {}
+permissions: { contents: write, pages: write, id-token: write }
+concurrency: { group: asap-publish, cancel-in-progress: false }
+jobs:
+  publish:
+    environment:
+      name: github-pages
+      url: ${{ steps.dep.outputs.page_url }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Update to the latest ASAP-Rank release (only when you press Sync now in the dashboard)
+        if: github.event.action == 'asap-sync'
+        env:
+          ASAP_MANIFEST_URL: ${{ vars.ASAP_MANIFEST_URL }}
+          ASAP_MIRROR_URL: ${{ vars.ASAP_MIRROR_URL }}
+        run: |
+          node sync.mjs runner
+          git config user.name "asap-rank-sync"
+          git config user.email "sync@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || { git commit -m "Sync ASAP-Rank release $(cat VERSION)"; git push; }
+      - name: Check that GitHub Pages is turned on
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if bt=$(gh api "repos/${{ github.repository }}/pages" --jq .build_type 2>&1); then
+            if [ "$bt" != "workflow" ]; then
+              echo "::error title=Change the Pages source::In this repository open Settings, then Pages, and under Source choose GitHub Actions. Then open the Actions tab, choose ASAP-Rank publish and press Run workflow."
+              exit 1
+            fi
+          elif echo "$bt" | grep -qi "not found"; then
+            echo "::error title=Turn on GitHub Pages first::In this repository open Settings, then Pages, and under Source choose GitHub Actions. Then open the Actions tab, choose ASAP-Rank publish and press Run workflow. (Pages needs a public repository on a free GitHub plan.)"
+            exit 1
+          else
+            echo "::warning::Could not check the Pages setting ($bt). Carrying on."
+          fi
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: node publish.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          APP_URL: ${{ secrets.APP_URL }}
+          FRONT_URL: ${{ secrets.FRONT_URL }}
+      - name: Save the files
+        run: |
+          git config user.name "${{ github.actor }}"; git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+          git add docs
+          if git diff --cached --quiet; then echo "nothing new"; else git commit -m "publish $(date -u +%FT%TZ)"; git pull --rebase -q || true; git push; fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with: { path: docs }
+      - id: dep
+        uses: actions/deploy-pages@v4
+      # Optional backup copy of your login and sales pages on another web host (see the setup guide). Never stops publishing.
+      - name: Prepare the backup copy of your pages
+        continue-on-error: true
+        run: node mirror.mjs stage docs bluehost-site
+      - name: Keep the backup copy (download it from this run if you do not use FTP)
+        if: hashFiles('bluehost-site/index.html') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with: { name: pages-backup-copy, path: bluehost-site, include-hidden-files: true, retention-days: 14 }
+      - name: Send the backup copy to your web host (only when the BLUEHOST_FTP secrets are set)
+        if: hashFiles('bluehost-site/index.html') != ''
+        continue-on-error: true
+        env:
+          BLUEHOST_FTP_HOST: ${{ secrets.BLUEHOST_FTP_HOST }}
+          BLUEHOST_FTP_USER: ${{ secrets.BLUEHOST_FTP_USER }}
+          BLUEHOST_FTP_PASS: ${{ secrets.BLUEHOST_FTP_PASS }}
+          BLUEHOST_FTP_DIR: ${{ secrets.BLUEHOST_FTP_DIR }}
+        run: node mirror.mjs upload bluehost-site

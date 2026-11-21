@@ -1,0 +1,19 @@
+# ASAP-Rank
+
+> ASAP-Rank is an AI-assisted SEO, AEO and lead-capture platform for website owners. One snippet (or a WordPress plugin) adds an on-page SEO and answer-engine optimisation assistant, popups, a chatbot, a CRM with drip campaigns, and a page-speed booster. Every change is reviewed and approved by the site owner. Each customer runs it on their own free Cloudflare, Supabase and GitHub accounts, so contacts, chats, leads and AI keys stay with the customer.
+
+## What it does
+- SEO and AEO: finds title, description, heading, schema and FAQ gaps, and proposes fixes you approve. Technical SEO checks and a website analyser.
+- Answer-engine and AI-search readiness (AEO, SGE, AI Overviews): FAQ and structured-data suggestions, and an llms.txt file for your own site.
+- Quick wins: a short, ranked list of the fastest improvements per page.
+- AI content: AI-assisted rewriting and new content ideas, using your own AI key.
+- Popups and templates: lead capture with targeting rules.
+- Chatbot: answers from your own pages and FAQs, with human handover.
+- CRM and drip campaigns: contacts, leads, email and WhatsApp follow-up sequences, HubSpot and Zoho sync, Google Sheets sync.
+- Speed booster: page-speed checks and safe front-end optimisations.
+- WordPress plugin and a one-line snippet for Shopify, Wix, Webflow and any other site.
+- Privacy: consent capture, one-click unsubscribe, data deletion, and customer-owned data.
+
+## Pages
+- [Home, features, live demos, pricing and FAQ](https://asap-rank.artistryc.in/)
+- [Create an account](https://asap-rank.artistryc.in/auth.html#signup)
